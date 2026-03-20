@@ -79,7 +79,7 @@ export class Renderer {
     // Auto mode - check terminal width
     const threshold = this.config.display?.compactWidth ?? 80;
     const termWidth = getTerminalWidth();
-    return termWidth < threshold;
+    return termWidth <= threshold;
   }
 
   private formatProgressBar(percent: number, width: number): string {
@@ -108,11 +108,12 @@ export class Renderer {
   }
 
   private getColorsForPercent(percent: number, baseColors: SegmentColor): SegmentColor {
-    const threshold = this.config.budget?.warningThreshold ?? 80;
+    const warningThreshold = this.config.budget?.warningThreshold ?? 80;
+    const criticalThreshold = this.config.budget?.criticalThreshold ?? 90;
 
-    if (percent >= 100) {
+    if (percent >= criticalThreshold) {
       return this.theme.critical;
-    } else if (percent >= threshold) {
+    } else if (percent >= warningThreshold) {
       return this.theme.warning;
     }
     return baseColors;
@@ -298,9 +299,11 @@ export class Renderer {
       text += ` (wk ${info.weekProgressPercent}%)`;
     }
 
+    const colors = this.getColorsForPercent(percent, this.theme.weekly);
+
     return {
       text: ` ${icon} ${text} `,
-      colors: this.theme.weekly,
+      colors,
     };
   }
 
