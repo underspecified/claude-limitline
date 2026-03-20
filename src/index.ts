@@ -20,7 +20,7 @@ async function main(): Promise<void> {
     debug("Hook data:", JSON.stringify(hookData));
 
     // Get environment info (repo name, git branch, model)
-    const envInfo = getEnvironmentInfo(hookData);
+    const envInfo = getEnvironmentInfo(hookData, config.context?.maxTokens);
     debug("Environment info:", JSON.stringify(envInfo));
 
     // Initialize providers

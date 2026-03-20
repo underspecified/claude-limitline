@@ -137,6 +137,34 @@ export const rosePineTheme: ColorTheme = {
   critical: { bg: "#eb6f92", fg: "#191724" },
 };
 
+// Selenized Light theme (custom)
+export const selenizedLightTheme: ColorTheme = {
+  directory: { bg: "#d2212d", fg: "#fbf3db" },
+  git: { bg: "#0072d4", fg: "#fbf3db" },
+  model: { bg: "#8762c6", fg: "#fbf3db" },
+  block: { bg: "#489100", fg: "#fbf3db" },   // green
+  weekly: { bg: "#489100", fg: "#fbf3db" },  // green
+  opus: { bg: "#8762c6", fg: "#fbf3db" },
+  sonnet: { bg: "#0072d4", fg: "#fbf3db" },
+  context: { bg: "#489100", fg: "#fbf3db" }, // green
+  warning: { bg: "#ad8900", fg: "#fbf3db" }, // yellow
+  critical: { bg: "#d2212d", fg: "#fbf3db" }, // red
+};
+
+// Selenized Dark theme (custom)
+export const selenizedDarkTheme: ColorTheme = {
+  directory: { bg: "#dc322f", fg: "#fdf6e3" },
+  git: { bg: "#268bd2", fg: "#fdf6e3" },
+  model: { bg: "#6c71c4", fg: "#fdf6e3" },
+  block: { bg: "#859900", fg: "#fdf6e3" },   // green
+  weekly: { bg: "#859900", fg: "#fdf6e3" },  // green
+  opus: { bg: "#6c71c4", fg: "#fdf6e3" },
+  sonnet: { bg: "#268bd2", fg: "#fdf6e3" },
+  context: { bg: "#859900", fg: "#fdf6e3" }, // green
+  warning: { bg: "#b58900", fg: "#fdf6e3" }, // yellow
+  critical: { bg: "#dc322f", fg: "#fdf6e3" }, // red
+};
+
 // All themes
 export const themes: Record<string, ColorTheme> = {
   dark: darkTheme,
@@ -145,6 +173,8 @@ export const themes: Record<string, ColorTheme> = {
   gruvbox: gruvboxTheme,
   "tokyo-night": tokyoNightTheme,
   "rose-pine": rosePineTheme,
+  "selenized-light": selenizedLightTheme,
+  "selenized-dark": selenizedDarkTheme,
 };
 
 // Get theme by name

@@ -8,6 +8,11 @@ export interface SimpleSegmentConfig {
   enabled: boolean;
 }
 
+export interface ContextSegmentConfig {
+  enabled: boolean;
+  maxTokens?: number;  // Override reported context_window_size (e.g., 160000 for practical limit)
+}
+
 export interface BlockSegmentConfig extends SegmentConfig {
   showTimeRemaining?: boolean;
 }
@@ -24,7 +29,8 @@ export interface BudgetConfig {
   resetDay?: number;     // 0=Sunday, 1=Monday, ..., 6=Saturday
   resetHour?: number;    // 0-23
   resetMinute?: number;  // 0-59
-  warningThreshold?: number; // percentage to show warning color
+  warningThreshold?: number;  // percentage to show warning color (default 80)
+  criticalThreshold?: number; // percentage to show critical color (default 90)
 }
 
 export interface DisplayConfig {
@@ -43,7 +49,7 @@ export interface LimitlineConfig {
   model?: SimpleSegmentConfig;      // Show Claude model
   block?: BlockSegmentConfig;
   weekly?: WeeklySegmentConfig;
-  context?: SimpleSegmentConfig;    // Show context window usage (right side)
+  context?: ContextSegmentConfig;   // Show context window usage (right side)
   budget?: BudgetConfig;
   theme?: string;
   segmentOrder?: SegmentName[];     // Custom order for segments
