@@ -77,6 +77,9 @@ export function formatModelName(modelId: string, displayName?: string): string {
 
   // Common model ID mappings
   const mappings: Record<string, string> = {
+    "claude-opus-4-6": "Opus 4.6",
+    "claude-sonnet-4-6": "Sonnet 4.6",
+    "claude-haiku-4-5-20251001": "Haiku 4.5",
     "claude-opus-4-5-20251101": "Opus 4.5",
     "claude-opus-4-20250514": "Opus 4",
     "claude-sonnet-4-20250514": "Sonnet 4",
@@ -99,18 +102,22 @@ export function formatModelName(modelId: string, displayName?: string): string {
   const lower = modelId.toLowerCase();
 
   if (lower.includes("opus")) {
+    if (lower.includes("4-6") || lower.includes("4.6")) return "Opus 4.6";
     if (lower.includes("4-5") || lower.includes("4.5")) return "Opus 4.5";
     if (lower.includes("4")) return "Opus 4";
     if (lower.includes("3")) return "Opus 3";
     return "Opus";
   }
   if (lower.includes("sonnet")) {
+    if (lower.includes("4-6") || lower.includes("4.6")) return "Sonnet 4.6";
+    if (lower.includes("4-5") || lower.includes("4.5")) return "Sonnet 4.5";
     if (lower.includes("4")) return "Sonnet 4";
     if (lower.includes("3-5") || lower.includes("3.5")) return "Sonnet 3.5";
     if (lower.includes("3")) return "Sonnet 3";
     return "Sonnet";
   }
   if (lower.includes("haiku")) {
+    if (lower.includes("4-5") || lower.includes("4.5")) return "Haiku 4.5";
     if (lower.includes("3")) return "Haiku 3";
     return "Haiku";
   }

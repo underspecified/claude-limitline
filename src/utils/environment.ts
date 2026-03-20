@@ -84,9 +84,26 @@ export interface EnvironmentInfo {
 }
 
 /**
- * Calculate context window usage percentage from hook data
+ * Resolve the effective max tokens for a model.
+ * Opus 1M models get 1,000,000; all others get 200,000.
+ * A manual override in config takes precedence over both.
  */
-export function getContextPercent(hookData?: ClaudeHookData | null): number {
+function resolveMaxTokens(hookData?: ClaudeHookData | null, maxTokensOverride?: number): number {
+  if (maxTokensOverride) return maxTokensOverride;
+
+  const modelId = (hookData?.model?.id || "").toLowerCase();
+  if (modelId.includes("opus") && modelId.includes("1m")) {
+    return 1_000_000;
+  }
+  return 200_000;
+}
+
+/**
+ * Calculate context window usage percentage from hook data
+ * @param hookData - Claude hook data containing context window info
+ * @param maxTokensOverride - Optional override for context_window_size
+ */
+export function getContextPercent(hookData?: ClaudeHookData | null, maxTokensOverride?: number): number {
   const ctx = hookData?.context_window;
   if (!ctx?.current_usage || !ctx.context_window_size) {
     return 0;
@@ -98,18 +115,22 @@ export function getContextPercent(hookData?: ClaudeHookData | null): number {
     (usage.cache_creation_input_tokens || 0) +
     (usage.cache_read_input_tokens || 0);
 
-  return Math.round((totalTokens / ctx.context_window_size) * 100);
+  const effectiveMax = resolveMaxTokens(hookData, maxTokensOverride);
+
+  return Math.round((totalTokens / effectiveMax) * 100);
 }
 
 /**
  * Get all environment info at once
+ * @param hookData - Claude hook data
+ * @param maxTokensOverride - Optional override for context window size
  */
-export function getEnvironmentInfo(hookData?: ClaudeHookData | null): EnvironmentInfo {
+export function getEnvironmentInfo(hookData?: ClaudeHookData | null, maxTokensOverride?: number): EnvironmentInfo {
   return {
     directory: getDirectoryName(hookData),
     gitBranch: getGitBranch(),
     gitDirty: hasGitChanges(),
     model: getClaudeModel(hookData),
-    contextPercent: getContextPercent(hookData),
+    contextPercent: getContextPercent(hookData, maxTokensOverride),
   };
 }
