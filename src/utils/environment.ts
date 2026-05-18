@@ -1,7 +1,25 @@
 import { execSync } from "child_process";
 import { basename } from "path";
+import { hostname } from "os";
 import { debug } from "./logger.js";
 import { type ClaudeHookData, formatModelName } from "./claude-hook.js";
+
+/**
+ * Short hostname: everything before the first dot.
+ * macOS often reports "mymac.local"; we want "mymac".
+ */
+export function getShortHostname(): string {
+  return hostname().split(".")[0];
+}
+
+/**
+ * True when this session is running over SSH (i.e., the host name is
+ * meaningful context). Returns false on direct/local sessions, where
+ * the hostname is just noise we should omit from the label.
+ */
+export function isRemoteSession(): boolean {
+  return Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY);
+}
 
 /**
  * Get the current directory/repo name
@@ -77,6 +95,7 @@ export function getClaudeModel(hookData?: ClaudeHookData | null): string | null 
 
 export interface EnvironmentInfo {
   directory: string | null;
+  hostname: string | null;
   gitBranch: string | null;
   gitDirty: boolean;
   model: string | null;
@@ -85,11 +104,14 @@ export interface EnvironmentInfo {
 
 /**
  * Resolve the effective max tokens for a model.
- * Opus 1M models get 1,000,000; all others get 200,000.
- * A manual override in config takes precedence over both.
+ * Priority: explicit config override → hook-reported context_window_size →
+ * model-name heuristic (1M for Opus 1M variants) → 200k default.
  */
 function resolveMaxTokens(hookData?: ClaudeHookData | null, maxTokensOverride?: number): number {
   if (maxTokensOverride) return maxTokensOverride;
+
+  const reported = hookData?.context_window?.context_window_size;
+  if (reported && reported > 0) return reported;
 
   const modelId = (hookData?.model?.id || "").toLowerCase();
   if (modelId.includes("opus") && modelId.includes("1m")) {
@@ -128,6 +150,7 @@ export function getContextPercent(hookData?: ClaudeHookData | null, maxTokensOve
 export function getEnvironmentInfo(hookData?: ClaudeHookData | null, maxTokensOverride?: number): EnvironmentInfo {
   return {
     directory: getDirectoryName(hookData),
+    hostname: isRemoteSession() ? getShortHostname() : null,
     gitBranch: getGitBranch(),
     gitDirty: hasGitChanges(),
     model: getClaudeModel(hookData),

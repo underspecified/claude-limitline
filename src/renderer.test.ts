@@ -14,6 +14,7 @@ vi.mock("./utils/terminal.js", () => ({
 describe("Renderer", () => {
   const defaultEnvInfo: EnvironmentInfo = {
     directory: "my-project",
+    hostname: null,
     gitBranch: "main",
     gitDirty: false,
     model: "Opus 4.5",

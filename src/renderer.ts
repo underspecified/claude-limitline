@@ -182,8 +182,10 @@ export class Renderer {
       ? ctx.envInfo.directory.slice(0, 10) + "…"
       : ctx.envInfo.directory;
 
+    const label = ctx.envInfo.hostname ? `${name}@${ctx.envInfo.hostname}` : name;
+
     return {
-      text: ` ${name} `,
+      text: ` ${label} `,
       colors: this.theme.directory,
     };
   }
