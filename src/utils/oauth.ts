@@ -364,7 +364,7 @@ async function refreshOAuthToken(): Promise<string | null> {
   }
 
   try {
-    debug("Attempting OAuth token refresh to bypass 429 rate limit");
+    debug("Attempting OAuth token refresh (expired token or rate limit)");
     const response = await fetch("https://console.anthropic.com/v1/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -554,9 +554,13 @@ export async function getRealtimeUsage(
 
     let result = await fetchUsageFromAPI(token);
 
-    // On 429, try refreshing the OAuth token for a fresh rate limit window
-    if (result.status === 429) {
-      debug("Got 429 rate limit — attempting token refresh");
+    // On 401 (expired token) or 429 (rate limit), refresh the OAuth token and
+    // retry. 401: the persisted access token expired — refreshing via the
+    // refresh_token revives it; without this an expired token NEVER recovers and
+    // we serve stale cached usage forever. 429: per-token rate limit — a fresh
+    // token gives a fresh window.
+    if (result.status === 401 || result.status === 429) {
+      debug(`Got ${result.status} — attempting OAuth token refresh`);
       const newToken = await refreshOAuthToken();
       if (newToken) {
         result = await fetchUsageFromAPI(newToken);
