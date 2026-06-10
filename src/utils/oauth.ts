@@ -269,136 +269,13 @@ export async function fetchUsageFromAPI(
   }
 }
 
-// --- OAuth token refresh ---
-// Rate limits on /api/oauth/usage are per-access-token.
-// Refreshing the token gives a fresh rate limit window.
-
-const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-
-interface RefreshResponse {
-  access_token: string;
-  refresh_token: string;
-  token_type: string;
-  expires_in: number;
-}
-
-async function getRefreshToken(): Promise<string | null> {
-  const platform = process.platform;
-  try {
-    if (platform === "darwin") {
-      const { stdout } = await execAsync(
-        `security find-generic-password -s "Claude Code-credentials" -w`,
-        { timeout: 5000 }
-      );
-      const parsed = JSON.parse(stdout.trim());
-      return parsed?.claudeAiOauth?.refreshToken ?? null;
-    }
-    if (platform === "linux") {
-      const configPath = path.join(os.homedir(), ".claude", ".credentials.json");
-      if (fs.existsSync(configPath)) {
-        const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        return parsed?.claudeAiOauth?.refreshToken ?? null;
-      }
-    }
-    if (platform === "win32") {
-      const configPath = path.join(os.homedir(), ".claude", ".credentials.json");
-      if (fs.existsSync(configPath)) {
-        const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        return parsed?.claudeAiOauth?.refreshToken ?? null;
-      }
-    }
-  } catch (error) {
-    debug("Failed to retrieve refresh token:", error);
-  }
-  return null;
-}
-
-async function updateCredentials(accessToken: string, refreshToken: string): Promise<boolean> {
-  const platform = process.platform;
-  try {
-    if (platform === "darwin") {
-      // Read existing keychain entry, update tokens, write back
-      const { stdout } = await execAsync(
-        `security find-generic-password -s "Claude Code-credentials" -w`,
-        { timeout: 5000 }
-      );
-      const parsed = JSON.parse(stdout.trim());
-      parsed.claudeAiOauth.accessToken = accessToken;
-      parsed.claudeAiOauth.refreshToken = refreshToken;
-      const newJson = JSON.stringify(parsed);
-
-      // macOS keychain requires delete-then-add for updates
-      await execAsync(
-        `security delete-generic-password -s "Claude Code-credentials"`,
-        { timeout: 5000 }
-      ).catch(() => { /* may not exist */ });
-      await execAsync(
-        `security add-generic-password -s "Claude Code-credentials" -a "Claude Code" -w ${JSON.stringify(newJson)}`,
-        { timeout: 5000 }
-      );
-      debug("Updated macOS Keychain with refreshed OAuth tokens");
-      return true;
-    }
-    if (platform === "linux" || platform === "win32") {
-      const configPath = path.join(os.homedir(), ".claude", ".credentials.json");
-      if (fs.existsSync(configPath)) {
-        const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        parsed.claudeAiOauth.accessToken = accessToken;
-        parsed.claudeAiOauth.refreshToken = refreshToken;
-        fs.writeFileSync(configPath, JSON.stringify(parsed, null, 2), "utf-8");
-        debug(`Updated credentials in ${configPath}`);
-        return true;
-      }
-    }
-  } catch (error) {
-    debug("Failed to update credentials:", error);
-  }
-  return false;
-}
-
-async function refreshOAuthToken(): Promise<string | null> {
-  const refreshToken = await getRefreshToken();
-  if (!refreshToken) {
-    debug("No refresh token available");
-    return null;
-  }
-
-  try {
-    debug("Attempting OAuth token refresh (expired token or rate limit)");
-    const response = await fetch("https://console.anthropic.com/v1/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: OAUTH_CLIENT_ID,
-      }),
-    });
-
-    if (!response.ok) {
-      debug(`Token refresh failed with status ${response.status}`);
-      return null;
-    }
-
-    const data = (await response.json()) as RefreshResponse;
-    if (!data.access_token || !data.refresh_token) {
-      debug("Token refresh response missing required fields");
-      return null;
-    }
-
-    // Persist both tokens — refresh tokens are one-time use
-    const updated = await updateCredentials(data.access_token, data.refresh_token);
-    if (!updated) {
-      debug("WARNING: Token refreshed but could not persist to credentials store");
-    }
-
-    debug("OAuth token refreshed successfully");
-    return data.access_token;
-  } catch (error) {
-    debug("OAuth token refresh error:", error);
-    return null;
-  }
-}
+// NOTE: limitline used to refresh the OAuth token itself on 401/429 (POST the
+// keychain refresh_token to console.anthropic.com, then rewrite the keychain).
+// That was removed: refresh tokens are ONE-TIME USE, and Claude Code refreshes
+// from the same shared keychain credential. Whoever rotates first invalidates
+// the other's copy, so limitline's refresh raced Claude Code, kept failing, and
+// served hours-stale cached usage forever. Claude Code now owns keychain
+// freshness; limitline only reads the token and shows no usage on 401/403.
 
 // File-based cache for API responses to persist across process invocations.
 // The status line runs as a short-lived process each refresh, so in-memory
@@ -532,10 +409,12 @@ export async function getRealtimeUsage(
     return deserializeUsage(diskCache.usage);
   }
 
-  // Don't retry too soon after a failed attempt (backoff)
+  // Don't retry too soon after a failed attempt (backoff). We do NOT serve the
+  // last cached usage here: anything past the pollInterval freshness check above
+  // is stale, and showing stale numbers is exactly the bug this avoids.
   if (diskCache?.lastAttempt && (now - diskCache.lastAttempt) < MIN_RETRY_MS) {
     debug(`Backing off after recent attempt (${Math.round((now - diskCache.lastAttempt) / 1000)}s ago)`);
-    return diskCache.usage ? deserializeUsage(diskCache.usage) : null;
+    return null;
   }
 
   // Deduplicate concurrent calls within the same process invocation
@@ -552,20 +431,12 @@ export async function getRealtimeUsage(
       return null;
     }
 
-    let result = await fetchUsageFromAPI(token);
+    const result = await fetchUsageFromAPI(token);
 
-    // On 401 (expired token) or 429 (rate limit), refresh the OAuth token and
-    // retry. 401: the persisted access token expired — refreshing via the
-    // refresh_token revives it; without this an expired token NEVER recovers and
-    // we serve stale cached usage forever. 429: per-token rate limit — a fresh
-    // token gives a fresh window.
-    if (result.status === 401 || result.status === 429) {
-      debug(`Got ${result.status} — attempting OAuth token refresh`);
-      const newToken = await refreshOAuthToken();
-      if (newToken) {
-        result = await fetchUsageFromAPI(newToken);
-      }
-    }
+    // No self-refresh on 401/429 (see note above): a 401 means Claude Code's
+    // keychain token is expired — it will refresh on its own use; a 403 means
+    // the token lacks the usage scope (e.g. a setup-token). Either way we just
+    // report no usage this render rather than racing the credential store.
 
     if (result.usage) {
       const newCache: DiskCache = {
@@ -579,7 +450,10 @@ export async function getRealtimeUsage(
       return result.usage;
     }
 
-    // API failed — record the attempt to enable backoff
+    // API failed. Record the attempt to enable backoff. We keep the previous
+    // usage/timestamp in the cache (so trend survives a brief blip and the old
+    // timestamp keeps the freshness check above from serving it), but we return
+    // null now — a failed render shows no usage rather than stale numbers.
     const failCache: DiskCache = {
       timestamp: diskCache?.timestamp ?? 0,
       lastAttempt: now,
@@ -587,12 +461,7 @@ export async function getRealtimeUsage(
       previousUsage: diskCache?.previousUsage ?? null,
     };
     writeDiskCache(failCache);
-
-    // Return stale cached data if available rather than nothing
-    if (diskCache?.usage) {
-      debug("API call failed, returning stale cached data");
-      return deserializeUsage(diskCache.usage);
-    }
+    debug(`API call failed (status ${result.status ?? "n/a"}); reporting no usage`);
     return null;
   })();
 
