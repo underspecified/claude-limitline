@@ -56,10 +56,10 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("test-token");
 
-      expect(result).not.toBeNull();
-      expect(result?.fiveHour?.percentUsed).toBe(45.5);
-      expect(result?.sevenDay?.percentUsed).toBe(30.2);
-      expect(result?.fiveHour?.isOverLimit).toBe(false);
+      expect(result.usage).not.toBeNull();
+      expect(result.usage?.fiveHour?.percentUsed).toBe(45.5);
+      expect(result.usage?.sevenDay?.percentUsed).toBe(30.2);
+      expect(result.usage?.fiveHour?.isOverLimit).toBe(false);
     });
 
     it("sets isOverLimit to true when utilization >= 100", async () => {
@@ -74,8 +74,8 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("test-token");
 
-      expect(result?.fiveHour?.isOverLimit).toBe(true);
-      expect(result?.sevenDay?.isOverLimit).toBe(true);
+      expect(result.usage?.fiveHour?.isOverLimit).toBe(true);
+      expect(result.usage?.sevenDay?.isOverLimit).toBe(true);
     });
 
     it("returns null when API returns error status", async () => {
@@ -87,7 +87,8 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("invalid-token");
 
-      expect(result).toBeNull();
+      expect(result.usage).toBeNull();
+      expect(result.status).toBe(401);
     });
 
     it("returns null when fetch throws", async () => {
@@ -95,7 +96,35 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("test-token");
 
-      expect(result).toBeNull();
+      expect(result.usage).toBeNull();
+    });
+
+    it("captures Retry-After (delta-seconds) on 429", async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: { get: (h: string) => (h.toLowerCase() === "retry-after" ? "120" : null) },
+      });
+
+      const result = await fetchUsageFromAPI("test-token");
+
+      expect(result.usage).toBeNull();
+      expect(result.status).toBe(429);
+      expect(result.retryAfterMs).toBe(120_000);
+    });
+
+    it("leaves retryAfterMs null when no Retry-After header", async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        headers: { get: () => null },
+      });
+
+      const result = await fetchUsageFromAPI("test-token");
+
+      expect(result.retryAfterMs).toBeNull();
     });
 
     it("handles missing five_hour data", async () => {
@@ -109,8 +138,8 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("test-token");
 
-      expect(result?.fiveHour).toBeNull();
-      expect(result?.sevenDay?.percentUsed).toBe(50);
+      expect(result.usage?.fiveHour).toBeNull();
+      expect(result.usage?.sevenDay?.percentUsed).toBe(50);
     });
 
     it("handles missing seven_day data", async () => {
@@ -124,8 +153,8 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("test-token");
 
-      expect(result?.fiveHour?.percentUsed).toBe(25);
-      expect(result?.sevenDay).toBeNull();
+      expect(result.usage?.fiveHour?.percentUsed).toBe(25);
+      expect(result.usage?.sevenDay).toBeNull();
     });
 
     it("parses seven_day_opus when present", async () => {
@@ -143,8 +172,8 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("test-token");
 
-      expect(result?.sevenDayOpus?.percentUsed).toBe(15.0);
-      expect(result?.sevenDaySonnet).toBeNull();
+      expect(result.usage?.sevenDayOpus?.percentUsed).toBe(15.0);
+      expect(result.usage?.sevenDaySonnet).toBeNull();
     });
 
     it("parses seven_day_sonnet when present", async () => {
@@ -162,8 +191,8 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("test-token");
 
-      expect(result?.sevenDayOpus).toBeNull();
-      expect(result?.sevenDaySonnet?.percentUsed).toBe(7.0);
+      expect(result.usage?.sevenDayOpus).toBeNull();
+      expect(result.usage?.sevenDaySonnet?.percentUsed).toBe(7.0);
     });
 
     it("parses all model-specific limits when present", async () => {
@@ -181,9 +210,9 @@ describe("oauth utilities", () => {
 
       const result = await fetchUsageFromAPI("test-token");
 
-      expect(result?.sevenDay?.percentUsed).toBe(47.0);
-      expect(result?.sevenDayOpus?.percentUsed).toBe(15.0);
-      expect(result?.sevenDaySonnet?.percentUsed).toBe(7.0);
+      expect(result.usage?.sevenDay?.percentUsed).toBe(47.0);
+      expect(result.usage?.sevenDayOpus?.percentUsed).toBe(15.0);
+      expect(result.usage?.sevenDaySonnet?.percentUsed).toBe(7.0);
     });
 
     it("sends correct headers", async () => {

@@ -220,6 +220,19 @@ export async function getOAuthToken(): Promise<string | null> {
 interface FetchResult {
   usage: OAuthUsageResponse | null;
   status: number | null;
+  // Server-requested cool-off in ms (from the Retry-After header on 429/529).
+  // null when the response carried no usable Retry-After.
+  retryAfterMs: number | null;
+}
+
+// Parse a Retry-After header (RFC 7231: delta-seconds or HTTP-date) into ms.
+function parseRetryAfter(header: string | null): number | null {
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(header);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return null;
 }
 
 export async function fetchUsageFromAPI(
@@ -238,7 +251,11 @@ export async function fetchUsageFromAPI(
 
     if (!response.ok) {
       debug(`Usage API returned status ${response.status}: ${response.statusText}`);
-      return { usage: null, status: response.status };
+      const retryAfterMs = parseRetryAfter(response.headers?.get("retry-after") ?? null);
+      if (retryAfterMs !== null) {
+        debug(`Usage API asked to retry after ${Math.round(retryAfterMs / 1000)}s`);
+      }
+      return { usage: null, status: response.status, retryAfterMs };
     }
 
     const data = (await response.json()) as ApiResponse;
@@ -262,10 +279,11 @@ export async function fetchUsageFromAPI(
         raw: data,
       },
       status: response.status,
+      retryAfterMs: null,
     };
   } catch (error) {
     debug("Failed to fetch usage from API:", error);
-    return { usage: null, status: null };
+    return { usage: null, status: null, retryAfterMs: null };
   }
 }
 
@@ -286,6 +304,7 @@ const CACHE_FILE = path.join(os.homedir(), ".claude", ".limitline-cache.json");
 interface DiskCache {
   timestamp: number;           // Last successful fetch
   lastAttempt: number;         // Last fetch attempt (success or failure)
+  retryUntil?: number;         // Epoch ms before which no process should re-hit the API
   usage: SerializedUsageResponse | null;
   previousUsage: SerializedUsageResponse | null;
 }
@@ -402,11 +421,30 @@ export async function getRealtimeUsage(
   const now = Date.now();
   const pollIntervalMs = pollIntervalMinutes * 60 * 1000;
 
-  // Check file-based cache first
+  // Check file-based cache first. The freshness window gets a per-process jitter
+  // (up to 90s) so a fleet of sessions sharing this cache don't all decide the
+  // data is stale in the same instant and stampede the API at once — whichever
+  // session crosses its (slightly longer) window first refetches and rewrites
+  // `timestamp`, which keeps the data fresh for the rest.
+  const freshnessMs = pollIntervalMs + Math.random() * 90 * 1000;
   const diskCache = readDiskCache();
-  if (diskCache?.usage && (now - diskCache.timestamp) < pollIntervalMs) {
+  if (diskCache?.usage && (now - diskCache.timestamp) < freshnessMs) {
     debug(`Using cached usage data (age: ${Math.round((now - diskCache.timestamp) / 1000)}s)`);
     return deserializeUsage(diskCache.usage);
+  }
+
+  // Honor a server-requested cool-off (Retry-After on 429/529). This is the key
+  // coordination point for a fleet of sessions: all of them share this cache
+  // file, so once one render records the deadline, the rest stay silent until
+  // the rate-limit window genuinely clears instead of perpetually re-pinning it.
+  // Per-process jitter staggers the herd at expiry so they don't all re-fire in
+  // the same instant and immediately re-trip a freshly-reset window.
+  if (diskCache?.retryUntil && now < diskCache.retryUntil) {
+    const jitterMs = Math.random() * 30 * 1000;
+    if (now < diskCache.retryUntil + jitterMs) {
+      debug(`Honoring Retry-After cool-off (${Math.round((diskCache.retryUntil - now) / 1000)}s left)`);
+      return null;
+    }
   }
 
   // Don't retry too soon after a failed attempt (backoff). We do NOT serve the
@@ -442,6 +480,7 @@ export async function getRealtimeUsage(
       const newCache: DiskCache = {
         timestamp: now,
         lastAttempt: now,
+        retryUntil: 0, // success clears any prior cool-off
         usage: serializeUsage(result.usage),
         previousUsage: diskCache?.usage ?? null,
       };
@@ -454,9 +493,13 @@ export async function getRealtimeUsage(
     // usage/timestamp in the cache (so trend survives a brief blip and the old
     // timestamp keeps the freshness check above from serving it), but we return
     // null now — a failed render shows no usage rather than stale numbers.
+    // If the server sent a Retry-After, persist that deadline so the whole fleet
+    // backs off for the full window; otherwise fall back to the MIN_RETRY_MS floor.
+    const coolOffMs = result.retryAfterMs ?? MIN_RETRY_MS;
     const failCache: DiskCache = {
       timestamp: diskCache?.timestamp ?? 0,
       lastAttempt: now,
+      retryUntil: now + coolOffMs,
       usage: diskCache?.usage ?? null,
       previousUsage: diskCache?.previousUsage ?? null,
     };
