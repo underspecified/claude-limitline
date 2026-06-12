@@ -33,6 +33,41 @@ interface ApiResponse {
   seven_day_sonnet?: ApiUsageBlock | null;
 }
 
+// A credential as read from the OS store. `expiresAt` is the OAuth access
+// token's expiry in epoch ms, or null when the source can't tell us (e.g. a
+// raw token with no surrounding JSON). The caller uses it to skip API calls
+// with a known-expired token instead of burning a 429 (see getRealtimeUsage).
+export interface OAuthCredential {
+  token: string;
+  expiresAt: number | null;
+}
+
+// Parse the JSON blob Claude Code stores in the keychain / credentials file.
+// Returns the access token plus its expiry, or null if the blob has no usable
+// `sk-ant-oat` token. Also accepts a bare raw token (expiry unknown).
+function parseKeychainCredential(content: string): OAuthCredential | null {
+  if (content.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(content);
+      const oauth = parsed.claudeAiOauth;
+      if (oauth && typeof oauth === "object") {
+        const token = oauth.accessToken;
+        if (typeof token === "string" && token.startsWith("sk-ant-oat")) {
+          const expiresAt =
+            typeof oauth.expiresAt === "number" ? oauth.expiresAt : null;
+          return { token, expiresAt };
+        }
+      }
+    } catch (parseError) {
+      debug("Failed to parse keychain JSON:", parseError);
+    }
+  }
+  if (content.startsWith("sk-ant-oat")) {
+    return { token: content, expiresAt: null };
+  }
+  return null;
+}
+
 async function getOAuthTokenWindows(): Promise<string | null> {
   try {
     // Try PowerShell to access Windows Credential Manager
@@ -110,36 +145,38 @@ async function getOAuthTokenWindows(): Promise<string | null> {
   return null;
 }
 
-async function getOAuthTokenMacOS(): Promise<string | null> {
-  try {
-    const { stdout } = await execAsync(
-      `security find-generic-password -s "Claude Code-credentials" -w`,
-      { timeout: 5000 }
-    );
-    const content = stdout.trim();
+async function getOAuthCredentialMacOS(): Promise<OAuthCredential | null> {
+  // The keychain can hold MULTIPLE "Claude Code-credentials" generic-password
+  // items that differ only by account. Claude Code writes the live token under
+  // an account matching the OS username; an older login can leave an orphan
+  // item under a different account (e.g. "Claude Code") that is never refreshed
+  // and stays perpetually expired. A bare `-s service -w` lookup returns an
+  // unspecified one — often the stale orphan. So query the current user's
+  // account FIRST, then fall back to the service-only lookup for setups that
+  // store under a different account name.
+  const username = os.userInfo().username;
+  const queries: { cmd: string; via: string }[] = [
+    {
+      cmd: `security find-generic-password -s "Claude Code-credentials" -a "${username}" -w`,
+      via: `account '${username}'`,
+    },
+    {
+      cmd: `security find-generic-password -s "Claude Code-credentials" -w`,
+      via: "service-only",
+    },
+  ];
 
-    // The keychain stores JSON with structure: {"claudeAiOauth":{"accessToken":"..."}}
-    if (content.startsWith("{")) {
-      try {
-        const parsed = JSON.parse(content);
-        if (parsed.claudeAiOauth && typeof parsed.claudeAiOauth === "object") {
-          const token = parsed.claudeAiOauth.accessToken;
-          if (token && typeof token === "string" && token.startsWith("sk-ant-oat")) {
-            debug("Found OAuth token in macOS Keychain under claudeAiOauth.accessToken");
-            return token;
-          }
-        }
-      } catch (parseError) {
-        debug("Failed to parse keychain JSON:", parseError);
+  for (const { cmd, via } of queries) {
+    try {
+      const { stdout } = await execAsync(cmd, { timeout: 5000 });
+      const cred = parseKeychainCredential(stdout.trim());
+      if (cred) {
+        debug(`Found OAuth token in macOS Keychain via ${via}`);
+        return cred;
       }
+    } catch (error) {
+      debug(`macOS Keychain retrieval failed (${via}):`, error);
     }
-
-    // Fallback: check if it's a raw token
-    if (content.startsWith("sk-ant-oat")) {
-      return content;
-    }
-  } catch (error) {
-    debug("macOS Keychain retrieval failed:", error);
   }
 
   return null;
@@ -199,22 +236,34 @@ async function getOAuthTokenLinux(): Promise<string | null> {
   return null;
 }
 
-export async function getOAuthToken(): Promise<string | null> {
+export async function getOAuthCredential(): Promise<OAuthCredential | null> {
   const platform = process.platform;
 
   debug(`Attempting to retrieve OAuth token on platform: ${platform}`);
 
   switch (platform) {
-    case "win32":
-      return getOAuthTokenWindows();
     case "darwin":
-      return getOAuthTokenMacOS();
-    case "linux":
-      return getOAuthTokenLinux();
+      return getOAuthCredentialMacOS();
+    case "win32": {
+      // Windows/Linux getters don't surface expiry yet; expiresAt=null means
+      // "unknown", which the caller treats as usable (current behavior).
+      const token = await getOAuthTokenWindows();
+      return token ? { token, expiresAt: null } : null;
+    }
+    case "linux": {
+      const token = await getOAuthTokenLinux();
+      return token ? { token, expiresAt: null } : null;
+    }
     default:
       debug(`Unsupported platform for OAuth token retrieval: ${platform}`);
       return null;
   }
+}
+
+// Back-compat wrapper: callers/tests that only need the token string.
+export async function getOAuthToken(): Promise<string | null> {
+  const cred = await getOAuthCredential();
+  return cred?.token ?? null;
 }
 
 interface FetchResult {
@@ -226,7 +275,7 @@ interface FetchResult {
 }
 
 // Parse a Retry-After header (RFC 7231: delta-seconds or HTTP-date) into ms.
-function parseRetryAfter(header: string | null): number | null {
+export function parseRetryAfter(header: string | null): number | null {
   if (!header) return null;
   const seconds = Number(header);
   if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
@@ -463,13 +512,29 @@ export async function getRealtimeUsage(
   }
 
   inflight = (async () => {
-    const token = await getOAuthToken();
-    if (!token) {
+    const cred = await getOAuthCredential();
+    if (!cred?.token) {
       debug("Could not retrieve OAuth token for realtime usage");
       return null;
     }
 
-    const result = await fetchUsageFromAPI(token);
+    // Expiry guard. Claude Code writes the keychain token at session start and
+    // refreshes its in-memory copy as needed; the on-disk copy can lag past
+    // expiry. Sending an expired token to the usage endpoint returns 429
+    // (rate_limit_error, NOT 401), which would arm a 1-hour fleet-wide cool-off
+    // below and hide usage indefinitely — the exact bug that showed "--"
+    // forever. Skip the API call entirely (keychain reads are local and cheap)
+    // and let a later render pick up the token once Claude Code rewrites it.
+    // We do NOT touch the cache here: no failed-attempt backoff, no cool-off.
+    if (cred.expiresAt !== null && cred.expiresAt <= now) {
+      const ageMin = Math.round((now - cred.expiresAt) / 60000);
+      debug(
+        `Keychain token expired ${ageMin}m ago; skipping API until Claude Code refreshes it`
+      );
+      return null;
+    }
+
+    const result = await fetchUsageFromAPI(cred.token);
 
     // No self-refresh on 401/429 (see note above): a 401 means Claude Code's
     // keychain token is expired — it will refresh on its own use; a 403 means

@@ -3,10 +3,12 @@ export { SYMBOLS, TEXT_SYMBOLS, COLORS, RESET_CODE } from "./constants.js";
 export { getTerminalWidth, visibleLength, colorize } from "./terminal.js";
 export {
   getOAuthToken,
+  getOAuthCredential,
   getRealtimeUsage,
   fetchUsageFromAPI,
   clearUsageCache,
   getUsageTrend,
+  type OAuthCredential,
   type OAuthUsageResponse,
   type TrendInfo,
 } from "./oauth.js";

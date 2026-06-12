@@ -5,6 +5,8 @@ import {
   getRealtimeUsage,
   clearUsageCache,
   getOAuthToken,
+  getOAuthCredential,
+  parseRetryAfter,
 } from "./oauth.js";
 
 // Mock fetch globally
@@ -16,6 +18,8 @@ vi.mock("node:fs", () => ({
   default: {
     existsSync: vi.fn(),
     readFileSync: vi.fn(),
+    writeFileSync: vi.fn(),
+    unlinkSync: vi.fn(),
   },
 }));
 
@@ -392,6 +396,141 @@ describe("oauth utilities", () => {
           expect.anything()
         );
       });
+    });
+  });
+
+  // Helper: drive the mocked exec by branching on the command string, so a
+  // single getOAuthCredential() call can see different keychain items per query.
+  const mockExecByCommand = (
+    resolve: (cmd: string) => string | Error
+  ): void => {
+    vi.mocked(exec).mockImplementation(((
+      cmd: string,
+      opts: unknown,
+      callback?: (
+        error: Error | null,
+        result: { stdout: string; stderr: string }
+      ) => void
+    ) => {
+      const cb = typeof opts === "function" ? opts : callback;
+      const out = resolve(cmd);
+      if (cb) {
+        if (out instanceof Error) cb(out, { stdout: "", stderr: "" });
+        else cb(null, { stdout: out, stderr: "" });
+      }
+      return {} as ReturnType<typeof exec>;
+    }) as typeof exec);
+  };
+
+  const credJson = (accessToken: string, expiresAt: number): string =>
+    JSON.stringify({ claudeAiOauth: { accessToken, expiresAt } });
+
+  describe("getOAuthCredential macOS account preference", () => {
+    const originalPlatform = process.platform;
+
+    beforeEach(() => {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    });
+
+    it("prefers the current-user account item over a service-only orphan", async () => {
+      const fresh = "sk-ant-oat-fresh-user-item";
+      const orphan = "sk-ant-oat-orphan-item";
+      // The username-scoped query carries `-a "..."`; the fallback does not.
+      mockExecByCommand((cmd) =>
+        cmd.includes('-a "')
+          ? credJson(fresh, Date.now() + 3_600_000)
+          : credJson(orphan, Date.now() - 99_999_999)
+      );
+
+      const cred = await getOAuthCredential();
+
+      expect(cred?.token).toBe(fresh);
+      expect(cred?.expiresAt).toBeGreaterThan(Date.now());
+    });
+
+    it("falls back to the service-only lookup when the account query fails", async () => {
+      const orphan = "sk-ant-oat-service-only-item";
+      mockExecByCommand((cmd) =>
+        cmd.includes('-a "')
+          ? new Error("no item for that account")
+          : credJson(orphan, Date.now() + 3_600_000)
+      );
+
+      const cred = await getOAuthCredential();
+
+      expect(cred?.token).toBe(orphan);
+    });
+
+    it("surfaces the token's expiry from the keychain JSON", async () => {
+      const exp = Date.now() + 1_234_000;
+      mockExecByCommand(() => credJson("sk-ant-oat-x", exp));
+
+      const cred = await getOAuthCredential();
+
+      expect(cred?.expiresAt).toBe(exp);
+    });
+  });
+
+  describe("getRealtimeUsage expiry guard (macOS)", () => {
+    const originalPlatform = process.platform;
+
+    beforeEach(() => {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+      vi.mocked(fs.existsSync).mockReturnValue(false); // no disk cache
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    });
+
+    it("does NOT call the API or arm a cool-off when the keychain token is expired", async () => {
+      mockExecByCommand(() => credJson("sk-ant-oat-expired", Date.now() - 60_000));
+
+      const result = await getRealtimeUsage(15);
+
+      expect(result).toBeNull();
+      expect(mockFetch).not.toHaveBeenCalled(); // no 429 to weaponize
+      expect(fs.writeFileSync).not.toHaveBeenCalled(); // no retryUntil written
+    });
+
+    it("DOES call the API when the keychain token is still valid", async () => {
+      mockExecByCommand(() => credJson("sk-ant-oat-valid", Date.now() + 3_600_000));
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            five_hour: { resets_at: "2026-01-15T12:00:00Z", utilization: 10 },
+            seven_day: { resets_at: "2026-01-20T00:00:00Z", utilization: 20 },
+          }),
+      });
+
+      const result = await getRealtimeUsage(15);
+
+      expect(mockFetch).toHaveBeenCalledOnce();
+      expect(result?.fiveHour?.percentUsed).toBe(10);
+    });
+  });
+
+  describe("parseRetryAfter", () => {
+    it("parses delta-seconds into milliseconds", () => {
+      expect(parseRetryAfter("120")).toBe(120_000);
+      expect(parseRetryAfter("0")).toBe(0);
+    });
+
+    it("returns null for a missing or unparseable header", () => {
+      expect(parseRetryAfter(null)).toBeNull();
+      expect(parseRetryAfter("not-a-date")).toBeNull();
+    });
+
+    it("parses an HTTP-date into a non-negative delay", () => {
+      const future = new Date(Date.now() + 60_000).toUTCString();
+      const ms = parseRetryAfter(future);
+      expect(ms).not.toBeNull();
+      expect(ms as number).toBeGreaterThan(0);
     });
   });
 });
