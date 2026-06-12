@@ -183,6 +183,31 @@ The tool automatically retrieves your OAuth token from Claude Code's credential 
 
 > **Note:** On macOS, the token is read directly from the system Keychain where Claude Code stores it. No additional configuration is needed—just make sure you're logged into Claude Code (`claude --login`).
 
+### Long-lived credential (recommended — survives past ~8h)
+
+Claude Code's keychain token rotates roughly every 8 hours, and Claude Code does
+**not** write each in-session refresh back to disk — so the keychain copy that
+this statusline reads goes stale between logins, and the usage segments fall
+back to `--` until the next Claude Code restart/login.
+
+To make usage data persist indefinitely, give limitline its **own** OAuth
+credential via a one-time authorization:
+
+```bash
+node limitline-auth.mjs
+```
+
+This runs the standard Claude OAuth flow (opens a browser, you approve, paste
+the code back), requesting the `user:profile` scope the usage endpoint needs.
+It writes `~/.claude/claude-limitline-credentials.json` (mode `0600`) with its
+own access **and** refresh token — an authorization independent of `claude
+/login`, so limitline refreshing it never disturbs your Claude Code session.
+
+When present, this credential takes precedence over the keychain. limitline
+self-refreshes it (~every 8h) using its own refresh token, so the budget keeps
+showing real numbers without any further logins. If the refresh token is ever
+revoked, just re-run `node limitline-auth.mjs` to re-seed it.
+
 ## Development
 
 ```bash

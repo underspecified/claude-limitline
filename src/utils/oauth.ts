@@ -461,6 +461,156 @@ export function getUsageTrend(): TrendInfo {
   return result;
 }
 
+// --- limitline's own OAuth credential (independent of Claude Code) ----------
+//
+// The keychain login token rotates ~every 8h and Claude Code doesn't persist
+// the refresh to disk, so limitline can't rely on it staying fresh — and it
+// can't share Claude Code's refresh token (one-time use; refreshing it would
+// break the running session). The fix: a SEPARATE authorization (run once via
+// limitline-auth.mjs) gives limitline its own access+refresh token with the
+// user:profile scope, stored here. Refreshing it is safe — it's an independent
+// refresh-token lineage Claude Code never touches — so limitline self-renews
+// indefinitely. This file, when present, takes precedence over the keychain.
+
+const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
+const LIMITLINE_CREDS_FILE = path.join(
+  os.homedir(),
+  ".claude",
+  "claude-limitline-credentials.json"
+);
+// Back off this long after a failed refresh so we don't hammer the token
+// endpoint every render when the refresh token has been revoked.
+const REFRESH_FAIL_BACKOFF_MS = 10 * 60 * 1000;
+
+interface LimitlineCreds {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  scopes?: string;
+  obtainedAt?: number;
+  refreshFailUntil?: number;
+}
+
+function readLimitlineCreds(): LimitlineCreds | null {
+  try {
+    if (fs.existsSync(LIMITLINE_CREDS_FILE)) {
+      const c = JSON.parse(
+        fs.readFileSync(LIMITLINE_CREDS_FILE, "utf-8")
+      ) as LimitlineCreds;
+      if (typeof c.accessToken === "string" && c.accessToken) return c;
+    }
+  } catch (error) {
+    debug("Failed to read limitline creds:", error);
+  }
+  return null;
+}
+
+function writeLimitlineCreds(c: LimitlineCreds): void {
+  try {
+    fs.writeFileSync(LIMITLINE_CREDS_FILE, JSON.stringify(c, null, 2), {
+      mode: 0o600,
+    });
+  } catch (error) {
+    debug("Failed to write limitline creds:", error);
+  }
+}
+
+// Refresh limitline's own credential using its independent refresh token.
+// Returns the new access token, or null on failure (with a persisted backoff).
+async function refreshLimitlineCreds(
+  lc: LimitlineCreds,
+  now: number
+): Promise<string | null> {
+  if (!lc.refreshToken) return null;
+  if (lc.refreshFailUntil && now < lc.refreshFailUntil) {
+    debug(
+      `limitline refresh backing off (${Math.round((lc.refreshFailUntil - now) / 1000)}s left)`
+    );
+    return null;
+  }
+
+  const fail = (): null => {
+    writeLimitlineCreds({ ...lc, refreshFailUntil: now + REFRESH_FAIL_BACKOFF_MS });
+    return null;
+  };
+
+  try {
+    const resp = await fetch(OAUTH_TOKEN_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "claude-limitline",
+      },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: lc.refreshToken,
+        client_id: OAUTH_CLIENT_ID,
+      }),
+    });
+
+    if (!resp.ok) {
+      debug(`limitline token refresh failed: HTTP ${resp.status}`);
+      return fail();
+    }
+
+    const data = (await resp.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      scope?: string;
+    };
+    if (!data.access_token || !data.refresh_token || !data.expires_in) {
+      debug("limitline refresh response missing required fields");
+      return fail();
+    }
+
+    writeLimitlineCreds({
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token, // rotated; persist the new one
+      expiresAt: now + data.expires_in * 1000,
+      scopes: data.scope ?? lc.scopes,
+      obtainedAt: lc.obtainedAt,
+      refreshFailUntil: 0,
+    });
+    debug("Refreshed limitline OAuth credential (persisted)");
+    return data.access_token;
+  } catch (error) {
+    debug("limitline token refresh error:", error);
+    return fail();
+  }
+}
+
+// Resolve the access token to call the usage API with. Prefers limitline's own
+// self-refreshable credential; falls back to the read-only keychain login token
+// (with the expired-token guard so a stale keychain copy never burns a 429).
+async function acquireUsageToken(now: number): Promise<string | null> {
+  const lc = readLimitlineCreds();
+  if (lc?.accessToken) {
+    if (lc.expiresAt > now + 60_000) {
+      debug("Using limitline's own OAuth credential");
+      return lc.accessToken;
+    }
+    const refreshed = await refreshLimitlineCreds(lc, now);
+    if (refreshed) return refreshed;
+    debug("limitline credential unavailable; falling back to keychain");
+  }
+
+  const cred = await getOAuthCredential();
+  if (!cred?.token) {
+    debug("Could not retrieve OAuth token for realtime usage");
+    return null;
+  }
+  if (cred.expiresAt !== null && cred.expiresAt <= now) {
+    const ageMin = Math.round((now - cred.expiresAt) / 60000);
+    debug(
+      `Keychain token expired ${ageMin}m ago; skipping API until Claude Code refreshes it`
+    );
+    return null;
+  }
+  return cred.token;
+}
+
 // Single in-flight fetch promise to deduplicate concurrent calls within the same process
 let inflight: Promise<OAuthUsageResponse | null> | null = null;
 
@@ -512,29 +662,12 @@ export async function getRealtimeUsage(
   }
 
   inflight = (async () => {
-    const cred = await getOAuthCredential();
-    if (!cred?.token) {
-      debug("Could not retrieve OAuth token for realtime usage");
-      return null;
-    }
+    // Prefer limitline's own self-refreshable credential; fall back to the
+    // keychain login token (with the expired-token guard). See acquireUsageToken.
+    const token = await acquireUsageToken(now);
+    if (!token) return null;
 
-    // Expiry guard. Claude Code writes the keychain token at session start and
-    // refreshes its in-memory copy as needed; the on-disk copy can lag past
-    // expiry. Sending an expired token to the usage endpoint returns 429
-    // (rate_limit_error, NOT 401), which would arm a 1-hour fleet-wide cool-off
-    // below and hide usage indefinitely — the exact bug that showed "--"
-    // forever. Skip the API call entirely (keychain reads are local and cheap)
-    // and let a later render pick up the token once Claude Code rewrites it.
-    // We do NOT touch the cache here: no failed-attempt backoff, no cool-off.
-    if (cred.expiresAt !== null && cred.expiresAt <= now) {
-      const ageMin = Math.round((now - cred.expiresAt) / 60000);
-      debug(
-        `Keychain token expired ${ageMin}m ago; skipping API until Claude Code refreshes it`
-      );
-      return null;
-    }
-
-    const result = await fetchUsageFromAPI(cred.token);
+    const result = await fetchUsageFromAPI(token);
 
     // No self-refresh on 401/429 (see note above): a 401 means Claude Code's
     // keychain token is expired — it will refresh on its own use; a 403 means

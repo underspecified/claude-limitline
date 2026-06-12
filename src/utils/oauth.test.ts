@@ -533,4 +533,133 @@ describe("oauth utilities", () => {
       expect(ms as number).toBeGreaterThan(0);
     });
   });
+
+  describe("limitline self-refreshing credential", () => {
+    const CREDS = "claude-limitline-credentials.json";
+    const originalPlatform = process.platform;
+
+    // Point fs at a limitline-creds file (and nothing else) so these tests
+    // isolate the limitline-credential path; the disk cache reads as absent.
+    const setCreds = (creds: object | null) => {
+      vi.mocked(fs.existsSync).mockImplementation((p) =>
+        String(p).includes(CREDS) ? creds !== null : false
+      );
+      vi.mocked(fs.readFileSync).mockImplementation((p) =>
+        String(p).includes(CREDS) && creds ? JSON.stringify(creds) : "{}"
+      );
+    };
+
+    const usageOk = {
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          five_hour: { resets_at: "2026-01-15T12:00:00Z", utilization: 26 },
+          seven_day: { resets_at: "2026-01-20T00:00:00Z", utilization: 32 },
+        }),
+    };
+
+    beforeEach(() => {
+      // Unsupported platform => the keychain fallback deterministically yields
+      // null, so only the limitline-credential path can produce a token.
+      Object.defineProperty(process, "platform", { value: "freebsd" });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    });
+
+    it("uses a valid limitline credential without refreshing", async () => {
+      setCreds({
+        accessToken: "sk-ant-oat-valid",
+        refreshToken: "sk-ant-ort-x",
+        expiresAt: Date.now() + 3_600_000,
+      });
+      mockFetch.mockImplementation((url) => {
+        if (String(url).includes("oauth/usage")) return Promise.resolve(usageOk);
+        throw new Error(`must not hit the token endpoint: ${url}`);
+      });
+
+      const result = await getRealtimeUsage(15);
+
+      expect(result?.fiveHour?.percentUsed).toBe(26);
+      expect(mockFetch).toHaveBeenCalledOnce(); // usage only, no refresh
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(
+        expect.stringContaining(CREDS),
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it("refreshes an expired credential, persists the rotated token, then fetches usage", async () => {
+      setCreds({
+        accessToken: "sk-ant-oat-old",
+        refreshToken: "sk-ant-ort-old",
+        expiresAt: Date.now() - 1000,
+      });
+      mockFetch.mockImplementation((url) => {
+        if (String(url).includes("oauth/token")) {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                access_token: "sk-ant-oat-new",
+                refresh_token: "sk-ant-ort-new",
+                expires_in: 28800,
+                scope: "user:inference user:profile",
+              }),
+          });
+        }
+        if (String(url).includes("oauth/usage")) return Promise.resolve(usageOk);
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+
+      const result = await getRealtimeUsage(15);
+
+      expect(result?.sevenDay?.percentUsed).toBe(32);
+      const wrote = vi
+        .mocked(fs.writeFileSync)
+        .mock.calls.find((c) => String(c[0]).includes(CREDS));
+      expect(wrote).toBeTruthy();
+      expect(String(wrote?.[1])).toContain("sk-ant-ort-new"); // rotated token persisted
+    });
+
+    it("does not hit the token endpoint while a refresh backoff is active", async () => {
+      setCreds({
+        accessToken: "sk-ant-oat-old",
+        refreshToken: "sk-ant-ort-old",
+        expiresAt: Date.now() - 1000,
+        refreshFailUntil: Date.now() + 5 * 60_000,
+      });
+      mockFetch.mockImplementation((url) => {
+        throw new Error(`should not fetch during backoff: ${url}`);
+      });
+
+      const result = await getRealtimeUsage(15);
+
+      expect(result).toBeNull();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("records a backoff and makes no usage call when the refresh fails", async () => {
+      setCreds({
+        accessToken: "sk-ant-oat-old",
+        refreshToken: "sk-ant-ort-old",
+        expiresAt: Date.now() - 1000,
+      });
+      mockFetch.mockImplementation((url) => {
+        if (String(url).includes("oauth/token"))
+          return Promise.resolve({ ok: false, status: 429 });
+        throw new Error(`usage must not be called when refresh fails: ${url}`);
+      });
+
+      const result = await getRealtimeUsage(15);
+
+      expect(result).toBeNull();
+      const wrote = vi
+        .mocked(fs.writeFileSync)
+        .mock.calls.find((c) => String(c[0]).includes(CREDS));
+      expect(wrote).toBeTruthy();
+      expect(String(wrote?.[1])).toContain("refreshFailUntil");
+    });
+  });
 });
