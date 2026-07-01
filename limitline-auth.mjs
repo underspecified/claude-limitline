@@ -8,7 +8,12 @@
 // session credential — so limitline can self-refresh it indefinitely without
 // racing Claude Code's rotation.
 //
-// Run interactively:  node limitline-auth.mjs
+// Run interactively:  node limitline-auth.mjs [profile]
+//   With a profile arg (e.g. `node limitline-auth.mjs work`) it writes a
+//   per-account file (claude-limitline-credentials-<profile>.json) that the
+//   statusline selects when CCP_PROFILE matches — so each ccp profile shows its
+//   own usage. No arg writes the legacy single-account file. Authorize once per
+//   account (log into that account in the browser at the approve step).
 //
 // Flow: prints an authorize URL (also tries to open it), you approve in the
 // browser, copy the displayed code, and paste it back here. The script then
@@ -27,7 +32,14 @@ const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
 const REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
 const SCOPE = "user:profile user:inference";
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-const CREDS_FILE = path.join(os.homedir(), ".claude", "claude-limitline-credentials.json");
+const PROFILE = (process.argv[2] ?? "").trim();
+const CREDS_FILE = path.join(
+  os.homedir(),
+  ".claude",
+  PROFILE
+    ? `claude-limitline-credentials-${PROFILE}.json`
+    : "claude-limitline-credentials.json"
+);
 
 const b64url = (buf) =>
   buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -59,6 +71,11 @@ async function main() {
     `&scope=${encodeURIComponent(SCOPE)}` +
     `&code_challenge=${challenge}&code_challenge_method=S256&state=${state}`;
 
+  console.log(
+    PROFILE
+      ? `\nAuthorizing limitline for profile '${PROFILE}' — log into the '${PROFILE}' account in the browser.`
+      : "\nAuthorizing limitline (legacy single-account file)."
+  );
   console.log("\n1. Open this URL and approve access (it should open automatically):\n");
   console.log("   " + url + "\n");
   tryOpen(url);

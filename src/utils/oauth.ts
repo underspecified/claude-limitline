@@ -7,6 +7,15 @@ import { debug } from "./logger.js";
 
 const execAsync = promisify(exec);
 
+// The active ccp profile for this session, staged into the dispatch tmux env as
+// CCP_PROFILE (see `ccp stage`). Lets the statusline pick per-account usage
+// credentials + cache so each session reflects the account it actually bills to.
+// Null when unset (single-account setups keep the legacy files).
+function activeProfile(): string | null {
+  const p = (process.env.CCP_PROFILE ?? "").trim();
+  return p ? p : null;
+}
+
 interface UsageData {
   resetAt: Date;
   percentUsed: number;
@@ -348,7 +357,15 @@ export async function fetchUsageFromAPI(
 // The status line runs as a short-lived process each refresh, so in-memory
 // caching is ineffective — we must serialize to disk.
 
-const CACHE_FILE = path.join(os.homedir(), ".claude", ".limitline-cache.json");
+// Per-profile cache so sessions on different accounts don't share/clobber usage.
+function cacheFile(): string {
+  const prof = activeProfile();
+  return path.join(
+    os.homedir(),
+    ".claude",
+    prof ? `.limitline-cache-${prof}.json` : ".limitline-cache.json"
+  );
+}
 
 interface DiskCache {
   timestamp: number;           // Last successful fetch
@@ -399,8 +416,9 @@ function deserializeUsage(s: SerializedUsageResponse): OAuthUsageResponse {
 
 function readDiskCache(): DiskCache | null {
   try {
-    if (fs.existsSync(CACHE_FILE)) {
-      const content = fs.readFileSync(CACHE_FILE, "utf-8");
+    const f = cacheFile();
+    if (fs.existsSync(f)) {
+      const content = fs.readFileSync(f, "utf-8");
       return JSON.parse(content) as DiskCache;
     }
   } catch (error) {
@@ -411,7 +429,7 @@ function readDiskCache(): DiskCache | null {
 
 function writeDiskCache(cache: DiskCache): void {
   try {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), "utf-8");
+    fs.writeFileSync(cacheFile(), JSON.stringify(cache), "utf-8");
   } catch (error) {
     debug("Failed to write disk cache:", error);
   }
@@ -474,11 +492,23 @@ export function getUsageTrend(): TrendInfo {
 
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
-const LIMITLINE_CREDS_FILE = path.join(
-  os.homedir(),
-  ".claude",
-  "claude-limitline-credentials.json"
-);
+
+// Per-account credential: prefer claude-limitline-credentials-<profile>.json for
+// the active ccp profile, falling back to the legacy single-account file when no
+// profile is set or the per-profile file hasn't been authorized yet. Authorize
+// each account once with `node limitline-auth.mjs <profile>`.
+function limitlineCredsFile(): string {
+  const prof = activeProfile();
+  if (prof) {
+    const perProfile = path.join(
+      os.homedir(),
+      ".claude",
+      `claude-limitline-credentials-${prof}.json`
+    );
+    if (fs.existsSync(perProfile)) return perProfile;
+  }
+  return path.join(os.homedir(), ".claude", "claude-limitline-credentials.json");
+}
 // Back off this long after a failed refresh so we don't hammer the token
 // endpoint every render when the refresh token has been revoked.
 const REFRESH_FAIL_BACKOFF_MS = 10 * 60 * 1000;
@@ -494,10 +524,9 @@ interface LimitlineCreds {
 
 function readLimitlineCreds(): LimitlineCreds | null {
   try {
-    if (fs.existsSync(LIMITLINE_CREDS_FILE)) {
-      const c = JSON.parse(
-        fs.readFileSync(LIMITLINE_CREDS_FILE, "utf-8")
-      ) as LimitlineCreds;
+    const f = limitlineCredsFile();
+    if (fs.existsSync(f)) {
+      const c = JSON.parse(fs.readFileSync(f, "utf-8")) as LimitlineCreds;
       if (typeof c.accessToken === "string" && c.accessToken) return c;
     }
   } catch (error) {
@@ -508,7 +537,7 @@ function readLimitlineCreds(): LimitlineCreds | null {
 
 function writeLimitlineCreds(c: LimitlineCreds): void {
   try {
-    fs.writeFileSync(LIMITLINE_CREDS_FILE, JSON.stringify(c, null, 2), {
+    fs.writeFileSync(limitlineCredsFile(), JSON.stringify(c, null, 2), {
       mode: 0o600,
     });
   } catch (error) {
@@ -715,8 +744,9 @@ export async function getRealtimeUsage(
 
 export function clearUsageCache(): void {
   try {
-    if (fs.existsSync(CACHE_FILE)) {
-      fs.unlinkSync(CACHE_FILE);
+    const f = cacheFile();
+    if (fs.existsSync(f)) {
+      fs.unlinkSync(f);
     }
   } catch (error) {
     debug("Failed to clear disk cache:", error);
