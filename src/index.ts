@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import { loadConfig } from "./config/index.js";
 import { BlockProvider } from "./segments/block.js";
 import { WeeklyProvider } from "./segments/weekly.js";
@@ -9,10 +12,29 @@ import { readHookData } from "./utils/claude-hook.js";
 import { getUsageTrend } from "./utils/oauth.js";
 import { debug } from "./utils/logger.js";
 
+// Untracked, per-box theme override. Lets the statusline follow OS dark/light
+// without churning the lnk-tracked config: the tracked config keeps a static
+// theme; the toggle_claude_theme hook (macOS dark-mode-notify / Linux darkman)
+// writes the current palette name here, and it wins on the next render.
+function resolveThemeOverride(): string | undefined {
+  const overridePath = path.join(os.homedir(), ".claude", ".claude-limitline-theme");
+  try {
+    if (fs.existsSync(overridePath)) {
+      const value = fs.readFileSync(overridePath, "utf-8").trim();
+      if (value) return value;
+    }
+  } catch (error) {
+    debug("Theme override read failed:", error);
+  }
+  return undefined;
+}
+
 async function main(): Promise<void> {
   try {
     // Load configuration
     const config = loadConfig();
+    const themeOverride = resolveThemeOverride();
+    if (themeOverride) config.theme = themeOverride;
     debug("Config loaded:", JSON.stringify(config));
 
     // Read hook data from stdin (Claude Code passes this)
