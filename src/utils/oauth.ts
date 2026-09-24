@@ -510,9 +510,15 @@ function limitlineCredsFile(): string {
   }
   return path.join(os.homedir(), ".claude", "claude-limitline-credentials.json");
 }
-// Back off this long after a failed refresh so we don't hammer the token
-// endpoint every render when the refresh token has been revoked.
-const REFRESH_FAIL_BACKOFF_MS = 10 * 60 * 1000;
+// Back off after a failed refresh so a dead refresh token doesn't hammer the
+// token endpoint: 10 min, doubling per consecutive failure, capped at a day.
+const REFRESH_BACKOFF_BASE_MS = 10 * 60 * 1000;
+const REFRESH_BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
+
+export function refreshBackoffMs(failures: number): number {
+  const n = Math.max(1, failures);
+  return Math.min(REFRESH_BACKOFF_MAX_MS, REFRESH_BACKOFF_BASE_MS * 2 ** (n - 1));
+}
 
 interface LimitlineCreds {
   accessToken: string;
@@ -521,6 +527,8 @@ interface LimitlineCreds {
   scopes?: string;
   obtainedAt?: number;
   refreshFailUntil?: number;
+  refreshFailures?: number;     // consecutive failed refreshes; cleared on success
+  refreshFailingSince?: number; // epoch ms of the streak's first failure
 }
 
 function readLimitlineCreds(): LimitlineCreds | null {
@@ -561,7 +569,15 @@ async function refreshLimitlineCreds(
   }
 
   const fail = (): null => {
-    writeLimitlineCreds({ ...lc, refreshFailUntil: now + REFRESH_FAIL_BACKOFF_MS });
+    const failures = (lc.refreshFailures ?? 0) + 1;
+    const backoffMs = refreshBackoffMs(failures);
+    debug(`limitline refresh failure #${failures}; retry in ${Math.round(backoffMs / 60000)}m`);
+    writeLimitlineCreds({
+      ...lc,
+      refreshFailUntil: now + backoffMs,
+      refreshFailures: failures,
+      refreshFailingSince: lc.refreshFailingSince ?? now,
+    });
     return null;
   };
 
