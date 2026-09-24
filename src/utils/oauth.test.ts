@@ -23,6 +23,10 @@ vi.mock("node:fs", () => ({
     readFileSync: vi.fn(),
     writeFileSync: vi.fn(),
     unlinkSync: vi.fn(),
+    renameSync: vi.fn(),
+    openSync: vi.fn(),
+    closeSync: vi.fn(),
+    statSync: vi.fn(),
   },
 }));
 
@@ -746,6 +750,79 @@ describe("oauth utilities", () => {
       expect(w.refreshFailures).toBeUndefined();
       expect(w.refreshFailingSince).toBeUndefined();
       expect(w.refreshFailUntil).toBe(0);
+    });
+
+    describe("concurrent statusline processes", () => {
+      const expired = { accessToken: "sk-ant-oat-old", refreshToken: "sk-ant-ort-old", expiresAt: Date.now() - 1000 };
+      const lockHeld = () =>
+        vi.mocked(fs.openSync).mockImplementation(() => {
+          throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
+        });
+
+      it("skips the refresh while another process holds the lock", async () => {
+        setCreds(expired);
+        lockHeld();
+        vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: Date.now() } as never);
+        failRefresh();
+
+        expect(await getRealtimeUsage(15)).toBeNull();
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it("takes over a stale lock left by a crashed process", async () => {
+        setCreds(expired);
+        vi.mocked(fs.openSync)
+          .mockImplementationOnce(() => {
+            throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
+          })
+          .mockReturnValue(3);
+        vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: Date.now() - 60_000 } as never);
+        failRefresh();
+
+        await getRealtimeUsage(15);
+
+        expect(fs.unlinkSync).toHaveBeenCalledWith(expect.stringMatching(/\.lock$/));
+        expect(String(mockFetch.mock.calls[0][0])).toContain("oauth/token");
+      });
+
+      it("uses a credential another process rotated while it waited for the lock", async () => {
+        const rotated = { accessToken: "sk-ant-oat-rotated", refreshToken: "sk-ant-ort-new", expiresAt: Date.now() + 3_600_000 };
+        let reads = 0;
+        vi.mocked(fs.existsSync).mockImplementation((p) => String(p).includes(CREDS));
+        vi.mocked(fs.readFileSync).mockImplementation((p) =>
+          String(p).includes(CREDS) ? JSON.stringify(reads++ === 0 ? expired : rotated) : "{}"
+        );
+        mockFetch.mockImplementation((url) => {
+          if (String(url).includes("oauth/usage")) return Promise.resolve(usageOk);
+          throw new Error(`must not refresh a spent token: ${url}`);
+        });
+
+        const result = await getRealtimeUsage(15);
+
+        expect(result?.fiveHour?.percentUsed).toBe(26);
+        expect(mockFetch.mock.calls[0][1].headers.Authorization).toBe("Bearer sk-ant-oat-rotated");
+        expect(vi.mocked(fs.writeFileSync).mock.calls.some((c) => String(c[0]).includes(CREDS))).toBe(false);
+      });
+
+      it("bounds the refresh request so a hung POST can't outlive the lock", async () => {
+        setCreds(expired);
+        failRefresh();
+
+        await getRealtimeUsage(15);
+
+        expect(mockFetch.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+      });
+
+      it("writes the credential to a temp file and renames it into place", async () => {
+        setCreds(expired);
+        failRefresh();
+
+        await getRealtimeUsage(15);
+
+        const tmp = String(vi.mocked(fs.writeFileSync).mock.calls.find((c) => String(c[0]).includes(CREDS))?.[0]);
+        expect(tmp).toMatch(/\.tmp$/);
+        expect(fs.renameSync).toHaveBeenCalledWith(tmp, expect.stringMatching(/claude-limitline-credentials\.json$/));
+      });
     });
 
     describe("isLimitlineAuthFailing", () => {
