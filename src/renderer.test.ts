@@ -391,4 +391,32 @@ describe("Renderer", () => {
     });
 
   });
+
+  describe("auth failure marker", () => {
+    const noBlock: BlockInfo = { percentUsed: null, resetAt: null, timeRemaining: null, isRealtime: false };
+    const noWeekly: WeeklyInfo = { ...defaultWeeklyInfo, percentUsed: null, isRealtime: false };
+
+    it("shows auth! in place of -- on both budget segments", () => {
+      const output = new Renderer(DEFAULT_CONFIG).render(noBlock, noWeekly, defaultEnvInfo, null, true);
+      expect(output.match(/auth!/g)).toHaveLength(2);
+    });
+
+    it("keeps -- when limitline auth is healthy", () => {
+      const output = new Renderer(DEFAULT_CONFIG).render(noBlock, noWeekly, defaultEnvInfo, null, false);
+      expect(output).toContain("--");
+      expect(output).not.toContain("auth!");
+    });
+
+    it("uses the marker in smart weekly view too", () => {
+      const config: LimitlineConfig = { ...DEFAULT_CONFIG, weekly: { enabled: true, viewMode: "smart" } };
+      const output = new Renderer(config).render(noBlock, noWeekly, defaultEnvInfo, null, true);
+      expect(output.match(/auth!/g)).toHaveLength(2);
+    });
+
+    it("still shows numbers (no marker) when usage data is present", () => {
+      const output = new Renderer(DEFAULT_CONFIG).render(defaultBlockInfo, defaultWeeklyInfo, defaultEnvInfo, null, true);
+      expect(output).toContain("25%");
+      expect(output).not.toContain("auth!");
+    });
+  });
 });

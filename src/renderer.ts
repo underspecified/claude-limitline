@@ -35,6 +35,7 @@ interface RenderContext {
   weeklyInfo: WeeklyInfo | null;
   envInfo: EnvironmentInfo;
   trendInfo: TrendInfo | null;
+  authFailing: boolean;
   compact: boolean;
 }
 
@@ -105,6 +106,12 @@ export class Renderer {
     if (trend === "up") return this.symbols.trendUp;
     if (trend === "down") return this.symbols.trendDown;
     return "";
+  }
+
+  // Placeholder for a budget segment with no data. `auth!` means limitline's
+  // own OAuth credential has failed to refresh for a day.
+  private noData(ctx: RenderContext): string {
+    return ctx.authFailing ? "auth!" : "--";
   }
 
   private getColorsForPercent(percent: number, baseColors: SegmentColor): SegmentColor {
@@ -233,7 +240,7 @@ export class Renderer {
 
     if (ctx.blockInfo.percentUsed === null) {
       return {
-        text: ` ${icon} -- `,
+        text: ` ${icon} ${this.noData(ctx)} `,
         colors: this.theme.block,
       };
     }
@@ -274,7 +281,7 @@ export class Renderer {
 
     if (info.percentUsed === null) {
       return {
-        text: ` ${icon} -- `,
+        text: ` ${icon} ${this.noData(ctx)} `,
         colors: this.theme.weekly,
       };
     }
@@ -343,7 +350,7 @@ export class Renderer {
     // For Opus, Haiku, or when no model-specific data: just show overall
     if (info.percentUsed === null) {
       return {
-        text: ` ${overallIcon} -- `,
+        text: ` ${overallIcon} ${this.noData(ctx)} `,
         colors: this.theme.weekly,
       };
     }
@@ -417,7 +424,8 @@ export class Renderer {
     blockInfo: BlockInfo | null,
     weeklyInfo: WeeklyInfo | null,
     envInfo: EnvironmentInfo,
-    trendInfo: TrendInfo | null = null
+    trendInfo: TrendInfo | null = null,
+    authFailing: boolean = false
   ): string {
     const compact = this.isCompactMode();
     const ctx: RenderContext = {
@@ -425,6 +433,7 @@ export class Renderer {
       weeklyInfo,
       envInfo,
       trendInfo,
+      authFailing,
       compact,
     };
 

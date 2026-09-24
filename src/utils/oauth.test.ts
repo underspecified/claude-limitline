@@ -9,6 +9,7 @@ import {
   parseRetryAfter,
   OAUTH_TOKEN_URL,
   refreshBackoffMs,
+  isLimitlineAuthFailing,
 } from "./oauth.js";
 
 // Mock fetch globally
@@ -745,6 +746,26 @@ describe("oauth utilities", () => {
       expect(w.refreshFailures).toBeUndefined();
       expect(w.refreshFailingSince).toBeUndefined();
       expect(w.refreshFailUntil).toBe(0);
+    });
+
+    describe("isLimitlineAuthFailing", () => {
+      const H = 3_600_000;
+      it("is false with no limitline credential file (keychain-only)", () => {
+        setCreds(null);
+        expect(isLimitlineAuthFailing()).toBe(false);
+      });
+      it("is false for a healthy credential", () => {
+        setCreds({ accessToken: "a", refreshToken: "r", expiresAt: Date.now() + H });
+        expect(isLimitlineAuthFailing()).toBe(false);
+      });
+      it("is false while the failure streak is under a day old", () => {
+        setCreds({ accessToken: "a", refreshToken: "r", expiresAt: 0, refreshFailingSince: Date.now() - 23 * H });
+        expect(isLimitlineAuthFailing()).toBe(false);
+      });
+      it("is true once refreshes have failed for a day", () => {
+        setCreds({ accessToken: "a", refreshToken: "r", expiresAt: 0, refreshFailingSince: Date.now() - 25 * H });
+        expect(isLimitlineAuthFailing()).toBe(true);
+      });
     });
   });
 

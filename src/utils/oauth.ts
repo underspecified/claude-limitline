@@ -554,6 +554,15 @@ function writeLimitlineCreds(c: LimitlineCreds): void {
   }
 }
 
+// A refresh streak failing this long surfaces as `auth!` in the statusline
+// (re-run limitline-auth.mjs). Reads only the streak start, never tokens.
+const AUTH_FAIL_VISIBLE_MS = 24 * 60 * 60 * 1000;
+
+export function isLimitlineAuthFailing(now: number = Date.now()): boolean {
+  const since = readLimitlineCreds()?.refreshFailingSince;
+  return typeof since === "number" && since > 0 && now - since >= AUTH_FAIL_VISIBLE_MS;
+}
+
 // Refresh limitline's own credential using its independent refresh token.
 // Returns the new access token, or null on failure (with a persisted backoff).
 async function refreshLimitlineCreds(

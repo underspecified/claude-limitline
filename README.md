@@ -22,7 +22,7 @@ A powerline-style statusline for Claude Code showing real-time usage limits, git
 
 ## Example Output
 
-```
+```text
  claude-limitline  main ●   Opus 4.5   12% (3h20m)   45% (wk 85%)
 ```
 
@@ -205,8 +205,11 @@ own access **and** refresh token — an authorization independent of `claude
 
 When present, this credential takes precedence over the keychain. limitline
 self-refreshes it (~every 8h) using its own refresh token, so the budget keeps
-showing real numbers without any further logins. If the refresh token is ever
-revoked, just re-run `node limitline-auth.mjs` to re-seed it.
+showing real numbers without any further logins. A failed refresh backs off
+exponentially (10 min, doubling, up to a day). If refreshes have failed for a
+day and there's no usage data, the budget segments show `auth!` instead of
+`--`. When that happens, the refresh token has been revoked or has expired:
+re-run `node limitline-auth.mjs` to re-seed it.
 
 ## Development
 
@@ -265,6 +268,7 @@ Debug output is written to stderr so it won't interfere with the status line out
 ### Model not showing
 
 The model is passed via stdin from Claude Code. If running standalone, pipe in hook data:
+
 ```bash
 echo '{"model":{"id":"claude-opus-4-5-20251101"}}' | claude-limitline
 ```
