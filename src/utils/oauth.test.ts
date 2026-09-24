@@ -7,6 +7,7 @@ import {
   getOAuthToken,
   getOAuthCredential,
   parseRetryAfter,
+  OAUTH_TOKEN_URL,
 } from "./oauth.js";
 
 // Mock fetch globally
@@ -660,6 +661,41 @@ describe("oauth utilities", () => {
         .mock.calls.find((c) => String(c[0]).includes(CREDS));
       expect(wrote).toBeTruthy();
       expect(String(wrote?.[1])).toContain("refreshFailUntil");
+    });
+
+    it("refreshes against Claude Code's current token endpoint, with scope", async () => {
+      setCreds({
+        accessToken: "sk-ant-oat-old",
+        refreshToken: "sk-ant-ort-old",
+        expiresAt: Date.now() - 1000,
+        scopes: "user:profile user:inference",
+      });
+      mockFetch.mockResolvedValue({ ok: false, status: 400 });
+
+      await getRealtimeUsage(15);
+
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe("https://platform.claude.com/v1/oauth/token");
+      expect(JSON.parse(init.body)).toMatchObject({
+        grant_type: "refresh_token",
+        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        scope: "user:profile user:inference",
+      });
+    });
+  });
+
+  describe("OAuth endpoints", () => {
+    it("limitline-auth.mjs uses the same current endpoints as the statusline", async () => {
+      const realFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+      const src = realFs.readFileSync(
+        new URL("../../limitline-auth.mjs", import.meta.url),
+        "utf-8"
+      );
+      expect(OAUTH_TOKEN_URL).toBe("https://platform.claude.com/v1/oauth/token");
+      expect(src).toContain(`TOKEN_URL = "${OAUTH_TOKEN_URL}"`);
+      expect(src).toContain('AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"');
+      expect(src).toContain('REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"');
+      expect(src).not.toContain("console.anthropic.com");
     });
   });
 });
