@@ -545,10 +545,12 @@ function readLimitlineCreds(): LimitlineCreds | null {
 }
 
 function writeLimitlineCreds(c: LimitlineCreds): void {
+  const f = limitlineCredsFile();
+  const tmp = `${f}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(limitlineCredsFile(), JSON.stringify(c, null, 2), {
-      mode: 0o600,
-    });
+    // Write-then-rename so a concurrent reader never sees a torn file.
+    fs.writeFileSync(tmp, JSON.stringify(c, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, f);
   } catch (error) {
     debug("Failed to write limitline creds:", error);
   }
@@ -597,6 +599,8 @@ async function refreshLimitlineCreds(
         "Content-Type": "application/json",
         "User-Agent": "claude-limitline",
       },
+      // Well inside REFRESH_LOCK_STALE_MS, so a hung POST can't outlive the lock.
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify({
         grant_type: "refresh_token",
         refresh_token: lc.refreshToken,
@@ -637,6 +641,53 @@ async function refreshLimitlineCreds(
   }
 }
 
+// Refresh tokens are one-time use and every Claude Code session runs its own
+// statusline process, so only one process may refresh at a time: a second
+// refresh with the same token fails, and its failure write would clobber the
+// winner's rotated credential. An O_EXCL lock file serializes them; a lock
+// older than this is from a process that died mid-refresh.
+const REFRESH_LOCK_STALE_MS = 30_000;
+
+function tryLock(lockPath: string, now: number): boolean {
+  try {
+    fs.closeSync(fs.openSync(lockPath, "wx", 0o600));
+    return true;
+  } catch {
+    try {
+      if (now - fs.statSync(lockPath).mtimeMs > REFRESH_LOCK_STALE_MS) {
+        fs.unlinkSync(lockPath);
+        fs.closeSync(fs.openSync(lockPath, "wx", 0o600));
+        return true;
+      }
+    } catch {
+      // Lost the race for the stale lock, or it vanished; skip this render.
+    }
+    return false;
+  }
+}
+
+// Refresh under the lock, re-reading the credential once it's held: another
+// process may have rotated it since our first read, and that copy is spent.
+async function refreshUnderLock(now: number): Promise<string | null> {
+  const lockPath = `${limitlineCredsFile()}.lock`;
+  if (!tryLock(lockPath, now)) {
+    debug("limitline refresh in progress in another process; skipping");
+    return null;
+  }
+  try {
+    const lc = readLimitlineCreds();
+    if (!lc) return null;
+    if (lc.expiresAt > now + 60_000) return lc.accessToken;
+    return await refreshLimitlineCreds(lc, now);
+  } finally {
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
 // Resolve the access token to call the usage API with. Prefers limitline's own
 // self-refreshable credential; falls back to the read-only keychain login token
 // (with the expired-token guard so a stale keychain copy never burns a 429).
@@ -647,7 +698,7 @@ async function acquireUsageToken(now: number): Promise<string | null> {
       debug("Using limitline's own OAuth credential");
       return lc.accessToken;
     }
-    const refreshed = await refreshLimitlineCreds(lc, now);
+    const refreshed = await refreshUnderLock(now);
     if (refreshed) return refreshed;
     debug("limitline credential unavailable; falling back to keychain");
   }
