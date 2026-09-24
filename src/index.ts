@@ -9,7 +9,7 @@ import { WeeklyProvider } from "./segments/weekly.js";
 import { Renderer } from "./renderer.js";
 import { getEnvironmentInfo } from "./utils/environment.js";
 import { readHookData } from "./utils/claude-hook.js";
-import { getUsageTrend } from "./utils/oauth.js";
+import { getUsageTrend, isLimitlineAuthFailing } from "./utils/oauth.js";
 import { debug } from "./utils/logger.js";
 
 // Untracked, per-box theme override. Lets the statusline follow OS dark/light
@@ -73,7 +73,7 @@ async function main(): Promise<void> {
 
     // Render output
     const renderer = new Renderer(config);
-    const output = renderer.render(blockInfo, weeklyInfo, envInfo, trendInfo);
+    const output = renderer.render(blockInfo, weeklyInfo, envInfo, trendInfo, isLimitlineAuthFailing());
 
     if (output) {
       process.stdout.write(output);
