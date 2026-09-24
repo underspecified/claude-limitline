@@ -27,9 +27,11 @@ import readline from "node:readline";
 import { spawn } from "node:child_process";
 
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
-const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
-const REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
+// Claude Code 2.1.281's prod OAuth config (CLAUDE_AI_AUTHORIZE_URL, TOKEN_URL,
+// MANUAL_REDIRECT_URL). Keep TOKEN_URL in sync with OAUTH_TOKEN_URL in oauth.ts.
+const AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
+const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 const SCOPE = "user:profile user:inference";
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const PROFILE = (process.argv[2] ?? "").trim();

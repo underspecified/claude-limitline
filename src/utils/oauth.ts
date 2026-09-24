@@ -346,7 +346,7 @@ export async function fetchUsageFromAPI(
 }
 
 // NOTE: limitline used to refresh the OAuth token itself on 401/429 (POST the
-// keychain refresh_token to console.anthropic.com, then rewrite the keychain).
+// keychain refresh_token to the OAuth token endpoint, then rewrite the keychain).
 // That was removed: refresh tokens are ONE-TIME USE, and Claude Code refreshes
 // from the same shared keychain credential. Whoever rotates first invalidates
 // the other's copy, so limitline's refresh raced Claude Code, kept failing, and
@@ -491,7 +491,8 @@ export function getUsageTrend(): TrendInfo {
 // indefinitely. This file, when present, takes precedence over the keychain.
 
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
+// Claude Code 2.1.281 moved OAuth to platform.claude.com (its prod TOKEN_URL).
+export const OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 
 // Per-account credential: prefer claude-limitline-credentials-<profile>.json for
 // the active ccp profile, falling back to the legacy single-account file when no
@@ -575,6 +576,7 @@ async function refreshLimitlineCreds(
         grant_type: "refresh_token",
         refresh_token: lc.refreshToken,
         client_id: OAUTH_CLIENT_ID,
+        ...(lc.scopes ? { scope: lc.scopes } : {}),
       }),
     });
 
