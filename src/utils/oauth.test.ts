@@ -8,6 +8,7 @@ import {
   getOAuthCredential,
   parseRetryAfter,
   OAUTH_TOKEN_URL,
+  refreshBackoffMs,
 } from "./oauth.js";
 
 // Mock fetch globally
@@ -681,6 +682,69 @@ describe("oauth utilities", () => {
         client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
         scope: "user:profile user:inference",
       });
+    });
+
+    const credsWrite = () =>
+      JSON.parse(
+        String(
+          vi.mocked(fs.writeFileSync).mock.calls.find((c) => String(c[0]).includes(CREDS))?.[1]
+        )
+      );
+    const failRefresh = () => mockFetch.mockResolvedValue({ ok: false, status: 400 });
+
+    it("doubles the backoff per consecutive failure, capped at 24h", () => {
+      expect(refreshBackoffMs(1)).toBe(10 * 60_000);
+      expect(refreshBackoffMs(2)).toBe(20 * 60_000);
+      expect(refreshBackoffMs(8)).toBe(1280 * 60_000);
+      expect(refreshBackoffMs(9)).toBe(24 * 3_600_000);
+      expect(refreshBackoffMs(5000)).toBe(24 * 3_600_000);
+    });
+
+    it("starts a streak from a legacy creds file with no failure fields", async () => {
+      setCreds({
+        accessToken: "a", refreshToken: "r", expiresAt: Date.now() - 1000,
+        refreshFailUntil: Date.now() - 1,
+      });
+      failRefresh();
+      await getRealtimeUsage(15);
+      const w = credsWrite();
+      expect(w.refreshFailures).toBe(1);
+      expect(w.refreshFailUntil - w.refreshFailingSince).toBe(10 * 60_000);
+    });
+
+    it("counts consecutive failures and keeps the streak start", async () => {
+      const since = Date.now() - 3 * 3_600_000;
+      setCreds({
+        accessToken: "a", refreshToken: "r", expiresAt: Date.now() - 1000,
+        refreshFailures: 2, refreshFailingSince: since,
+      });
+      failRefresh();
+      const before = Date.now();
+      await getRealtimeUsage(15);
+      const w = credsWrite();
+      expect(w.refreshFailures).toBe(3);
+      expect(w.refreshFailingSince).toBe(since);
+      expect(w.refreshFailUntil).toBeGreaterThanOrEqual(before + 40 * 60_000);
+      expect(w.refreshFailUntil).toBeLessThanOrEqual(Date.now() + 40 * 60_000);
+    });
+
+    it("clears the failure streak after a successful refresh", async () => {
+      setCreds({
+        accessToken: "a", refreshToken: "r", expiresAt: Date.now() - 1000,
+        refreshFailures: 5, refreshFailingSince: Date.now() - 2 * 86_400_000,
+      });
+      mockFetch.mockImplementation((url) =>
+        Promise.resolve(
+          String(url).includes("oauth/token")
+            ? { ok: true, json: () => Promise.resolve({ access_token: "n", refresh_token: "nr", expires_in: 28800 }) }
+            : usageOk
+        )
+      );
+      await getRealtimeUsage(15);
+      const w = credsWrite();
+      expect(w.refreshFailures).toBeUndefined();
+      expect(w.refreshFailingSince).toBeUndefined();
+      expect(w.refreshFailUntil).toBe(0);
     });
   });
 
