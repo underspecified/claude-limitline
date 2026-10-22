@@ -1,40 +1,30 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { BlockProvider } from "./block.js";
+import type { OAuthUsageResponse } from "../utils/oauth.js";
 
-// Mock the oauth module
-vi.mock("../utils/oauth.js", () => ({
-  getRealtimeUsage: vi.fn(),
-}));
-
-import { getRealtimeUsage } from "../utils/oauth.js";
+const withFiveHour = (
+  fiveHour: OAuthUsageResponse["fiveHour"]
+): OAuthUsageResponse => ({
+  fiveHour,
+  sevenDay: null,
+  sevenDayOpus: null,
+  sevenDaySonnet: null,
+});
 
 describe("BlockProvider", () => {
   let provider: BlockProvider;
 
   beforeEach(() => {
-    vi.resetAllMocks();
     provider = new BlockProvider();
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   describe("getBlockInfo", () => {
-    it("returns realtime block info when API returns data", async () => {
+    it("returns realtime block info when usage has a five-hour window", () => {
       const futureDate = new Date(Date.now() + 3 * 60 * 60 * 1000); // 3 hours from now
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: {
-          percentUsed: 45,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-        sevenDay: null,
-        sevenDayOpus: null,
-        sevenDaySonnet: null,
-      });
 
-      const result = await provider.getBlockInfo(15);
+      const result = provider.getBlockInfo(
+        withFiveHour({ percentUsed: 45, resetAt: futureDate, isOverLimit: false })
+      );
 
       expect(result.percentUsed).toBe(45);
       expect(result.isRealtime).toBe(true);
@@ -42,39 +32,34 @@ describe("BlockProvider", () => {
       expect(result.resetAt).toEqual(futureDate);
     });
 
-    it("calculates correct time remaining", async () => {
+    it("calculates correct time remaining", () => {
       const twoHoursFromNow = new Date(Date.now() + 2 * 60 * 60 * 1000);
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: {
-          percentUsed: 30,
-          resetAt: twoHoursFromNow,
-          isOverLimit: false,
-        },
-        sevenDay: null,
-        sevenDayOpus: null,
-        sevenDaySonnet: null,
-      });
 
-      const result = await provider.getBlockInfo();
+      const result = provider.getBlockInfo(
+        withFiveHour({ percentUsed: 30, resetAt: twoHoursFromNow, isOverLimit: false })
+      );
 
       // Should be approximately 120 minutes (2 hours)
       expect(result.timeRemaining).toBeGreaterThanOrEqual(119);
       expect(result.timeRemaining).toBeLessThanOrEqual(121);
     });
 
-    it("returns null values when API returns no fiveHour data", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
+    it("returns null values when usage has no fiveHour data", () => {
+      const result = provider.getBlockInfo({
         fiveHour: null,
-        sevenDay: {
-          percentUsed: 50,
-          resetAt: new Date(),
-          isOverLimit: false,
-        },
+        sevenDay: { percentUsed: 50, resetAt: new Date(), isOverLimit: false },
         sevenDayOpus: null,
         sevenDaySonnet: null,
       });
 
-      const result = await provider.getBlockInfo();
+      expect(result.percentUsed).toBeNull();
+      expect(result.resetAt).toBeNull();
+      expect(result.timeRemaining).toBeNull();
+      expect(result.isRealtime).toBe(false);
+    });
+
+    it("returns null values when there is no usage", () => {
+      const result = provider.getBlockInfo(null);
 
       expect(result.percentUsed).toBeNull();
       expect(result.resetAt).toBeNull();
@@ -82,82 +67,14 @@ describe("BlockProvider", () => {
       expect(result.isRealtime).toBe(false);
     });
 
-    it("returns null values when API returns null", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
-
-      const result = await provider.getBlockInfo();
-
-      expect(result.percentUsed).toBeNull();
-      expect(result.resetAt).toBeNull();
-      expect(result.timeRemaining).toBeNull();
-      expect(result.isRealtime).toBe(false);
-    });
-
-    it("uses custom poll interval", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
-
-      await provider.getBlockInfo(30);
-
-      expect(getRealtimeUsage).toHaveBeenCalledWith(30);
-    });
-
-    it("uses default poll interval of 15 when not specified", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
-
-      await provider.getBlockInfo();
-
-      expect(getRealtimeUsage).toHaveBeenCalledWith(15);
-    });
-
-    it("handles zero time remaining when reset time is past", async () => {
+    it("handles zero time remaining when reset time is past", () => {
       const pastDate = new Date(Date.now() - 1000); // 1 second ago
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: {
-          percentUsed: 100,
-          resetAt: pastDate,
-          isOverLimit: true,
-        },
-        sevenDay: null,
-        sevenDayOpus: null,
-        sevenDaySonnet: null,
-      });
 
-      const result = await provider.getBlockInfo();
+      const result = provider.getBlockInfo(
+        withFiveHour({ percentUsed: 100, resetAt: pastDate, isOverLimit: true })
+      );
 
       expect(result.timeRemaining).toBe(0);
-    });
-
-    it("handles API errors gracefully", async () => {
-      vi.mocked(getRealtimeUsage).mockRejectedValue(new Error("Network error"));
-
-      const result = await provider.getBlockInfo();
-
-      expect(result.percentUsed).toBeNull();
-      expect(result.isRealtime).toBe(false);
-    });
-
-    it("renders from stdin usage without calling the usage API", async () => {
-      const resetAt = new Date(Date.now() + 60 * 60 * 1000);
-
-      const result = await provider.getBlockInfo(15, {
-        fiveHour: { percentUsed: 42, resetAt, isOverLimit: false },
-        sevenDay: null,
-        sevenDayOpus: null,
-        sevenDaySonnet: null,
-      });
-
-      expect(result.percentUsed).toBe(42);
-      expect(result.resetAt).toEqual(resetAt);
-      expect(result.isRealtime).toBe(true);
-      expect(getRealtimeUsage).not.toHaveBeenCalled();
-    });
-
-    it("falls back to the usage API when stdin has no usage", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
-
-      await provider.getBlockInfo(15, null);
-
-      expect(getRealtimeUsage).toHaveBeenCalledWith(15);
     });
   });
 });

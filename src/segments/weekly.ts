@@ -1,5 +1,5 @@
 import { debug } from "../utils/logger.js";
-import { getRealtimeUsage, type OAuthUsageResponse } from "../utils/oauth.js";
+import type { OAuthUsageResponse } from "../utils/oauth.js";
 
 export interface WeeklyInfo {
   percentUsed: number | null;
@@ -64,16 +64,12 @@ export class WeeklyProvider {
     const periodStart = new Date(resetTime);
     periodStart.setDate(periodStart.getDate() - 7);
 
-    // If we're past the reset time, the period started at the last reset
+    // Past the reset time: the window repeats weekly, so measure from the
+    // latest reset, however many weeks ago the known one was.
     if (now > resetTime) {
-      // We're in a new period, reset was the start
-      const newPeriodStart = resetTime;
-      const newResetTime = new Date(resetTime);
-      newResetTime.setDate(newResetTime.getDate() + 7);
-
-      const totalMs = newResetTime.getTime() - newPeriodStart.getTime();
-      const elapsedMs = now.getTime() - newPeriodStart.getTime();
-      return Math.round((elapsedMs / totalMs) * 100);
+      const weekMs = 7 * 24 * 60 * 60 * 1000;
+      const elapsedMs = (now.getTime() - resetTime.getTime()) % weekMs;
+      return Math.round((elapsedMs / weekMs) * 100);
     }
 
     // Calculate progress through current period
@@ -84,77 +80,52 @@ export class WeeklyProvider {
     return Math.round(progress);
   }
 
-  // `stdinUsage` (from the statusline's `rate_limits`) wins over the OAuth API.
-  async getWeeklyInfo(
+  // `usage` is resolved once per render (see resolveUsage).
+  getWeeklyInfo(
+    usage: OAuthUsageResponse | null,
     resetDay?: number,
     resetHour?: number,
-    resetMinute?: number,
-    pollInterval?: number,
-    stdinUsage?: OAuthUsageResponse | null
-  ): Promise<WeeklyInfo> {
-    // Try to get data from OAuth API (realtime mode)
-    const realtimeInfo = await this.getRealtimeWeeklyInfo(pollInterval, stdinUsage);
-    if (realtimeInfo) {
-      return realtimeInfo;
+    resetMinute?: number
+  ): WeeklyInfo {
+    const sevenDay = usage?.sevenDay;
+    if (!sevenDay) {
+      // Fallback to estimate mode
+      debug("No weekly usage data available, falling back to estimate mode");
+      return {
+        percentUsed: null,
+        resetAt: null,
+        isRealtime: false,
+        weekProgressPercent: this.calculateWeekProgress(resetDay, resetHour, resetMinute),
+        opusPercentUsed: null,
+        sonnetPercentUsed: null,
+        opusResetAt: null,
+        sonnetResetAt: null,
+      };
     }
 
-    // Fallback to estimate mode
-    debug("Realtime mode failed, falling back to estimate mode");
-    const weekProgressPercent = this.calculateWeekProgress(resetDay, resetHour, resetMinute);
+    const sevenDayOpus = usage.sevenDayOpus;
+    const sevenDaySonnet = usage.sevenDaySonnet;
+
+    // Calculate week progress based on the window's reset time
+    const weekProgressPercent = this.calculateWeekProgressFromResetTime(sevenDay.resetAt);
+
+    debug(`Weekly segment: ${sevenDay.percentUsed}% used, resets at ${sevenDay.resetAt}`);
+    if (sevenDayOpus) {
+      debug(`Weekly Opus: ${sevenDayOpus.percentUsed}% used`);
+    }
+    if (sevenDaySonnet) {
+      debug(`Weekly Sonnet: ${sevenDaySonnet.percentUsed}% used`);
+    }
 
     return {
-      percentUsed: null,
-      resetAt: null,
-      isRealtime: false,
+      percentUsed: sevenDay.percentUsed,
+      resetAt: sevenDay.resetAt,
+      isRealtime: true,
       weekProgressPercent,
-      opusPercentUsed: null,
-      sonnetPercentUsed: null,
-      opusResetAt: null,
-      sonnetResetAt: null,
+      opusPercentUsed: sevenDayOpus?.percentUsed ?? null,
+      sonnetPercentUsed: sevenDaySonnet?.percentUsed ?? null,
+      opusResetAt: sevenDayOpus?.resetAt ?? null,
+      sonnetResetAt: sevenDaySonnet?.resetAt ?? null,
     };
-  }
-
-  private async getRealtimeWeeklyInfo(
-    pollInterval?: number,
-    stdinUsage?: OAuthUsageResponse | null
-  ): Promise<WeeklyInfo | null> {
-    try {
-      const usage = stdinUsage ?? (await getRealtimeUsage(pollInterval ?? 15));
-      if (!usage || !usage.sevenDay) {
-        debug("No realtime weekly usage data available");
-        return null;
-      }
-
-      const sevenDay = usage.sevenDay;
-      const sevenDayOpus = usage.sevenDayOpus;
-      const sevenDaySonnet = usage.sevenDaySonnet;
-
-      // Calculate week progress based on API's reset time
-      const weekProgressPercent = this.calculateWeekProgressFromResetTime(sevenDay.resetAt);
-
-      debug(
-        `Weekly segment (realtime): ${sevenDay.percentUsed}% used, resets at ${sevenDay.resetAt.toISOString()}`
-      );
-      if (sevenDayOpus) {
-        debug(`Weekly Opus: ${sevenDayOpus.percentUsed}% used`);
-      }
-      if (sevenDaySonnet) {
-        debug(`Weekly Sonnet: ${sevenDaySonnet.percentUsed}% used`);
-      }
-
-      return {
-        percentUsed: sevenDay.percentUsed,
-        resetAt: sevenDay.resetAt,
-        isRealtime: true,
-        weekProgressPercent,
-        opusPercentUsed: sevenDayOpus?.percentUsed ?? null,
-        sonnetPercentUsed: sevenDaySonnet?.percentUsed ?? null,
-        opusResetAt: sevenDayOpus?.resetAt ?? null,
-        sonnetResetAt: sevenDaySonnet?.resetAt ?? null,
-      };
-    } catch (error) {
-      debug("Error getting realtime weekly info:", error);
-      return null;
-    }
   }
 }

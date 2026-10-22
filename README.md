@@ -175,7 +175,9 @@ claude-limitline retrieves data from two sources:
 
 The block and weekly segments read Claude Code's own `rate_limits` from the statusline stdin when it is present (`five_hour` and `seven_day`, each with `used_percentage` and `resets_at`). That path makes no network call and needs no credential, and it always matches the account the session runs on. It writes no usage cache, so trend arrows and the Sonnet figure in the `smart` weekly view stay empty on it.
 
-Claude Code sends `rate_limits` only in Claude.ai subscription sessions, from the session's first API response on. Before then, and in API-key sessions (`rate_limits: null`), limitline falls back to the OAuth usage API below. `auth!` can only appear on that fallback path.
+Each window is checked on its own. The percentage is clamped to 0–100, and a window whose `resets_at` has passed shows 0%, since it has rolled over. A window that is missing, non-numeric, or resets more than 8 days out falls back to the OAuth usage API below, and the other window still comes from stdin.
+
+Claude Code sends `rate_limits` only in Claude.ai subscription sessions, from the session's first API response on. Before then, and in API-key sessions (`rate_limits: null`), both windows fall back. `auth!` and trend arrows appear only on a window that came from the fallback.
 
 ### OAuth Token Location
 

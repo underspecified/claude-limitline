@@ -84,7 +84,9 @@ export class Renderer {
   }
 
   private formatProgressBar(percent: number, width: number): string {
-    const filled = Math.round((percent / 100) * width);
+    // Clamped, or String.repeat throws on a percentage outside 0-100.
+    const clamped = Math.min(100, Math.max(0, percent));
+    const filled = Math.round((clamped / 100) * width);
     const empty = width - filled;
     return this.symbols.progressFull.repeat(filled) + this.symbols.progressEmpty.repeat(empty);
   }

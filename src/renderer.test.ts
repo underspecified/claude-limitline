@@ -314,6 +314,23 @@ describe("Renderer", () => {
       // Should contain progress bar characters
       expect(output).toMatch(/[█░]/);
     });
+
+    it.each([105, 120, -20, Infinity])("still renders the bar style at %s percent", (percent) => {
+      const config: LimitlineConfig = {
+        ...DEFAULT_CONFIG,
+        block: { enabled: true, displayStyle: "bar", barWidth: 5 },
+        weekly: { ...DEFAULT_CONFIG.weekly!, displayStyle: "bar", barWidth: 5 },
+      };
+      const renderer = new Renderer(config);
+
+      const output = renderer.render(
+        { ...defaultBlockInfo, percentUsed: percent },
+        { ...defaultWeeklyInfo, percentUsed: percent },
+        defaultEnvInfo
+      );
+
+      expect(output).toMatch(percent > 0 ? /█████/ : /░░░░░/);
+    });
   });
 
   describe("weekly view modes", () => {

@@ -1,5 +1,4 @@
 import { debug } from "./logger.js";
-import type { OAuthUsageResponse } from "./oauth.js";
 
 /**
  * One subscription usage window from the statusline stdin `rate_limits`.
@@ -42,29 +41,6 @@ export interface ClaudeHookData {
   // response, null in an API-key session.
   rate_limits?: RateLimits | null;
   version?: string;
-}
-
-/**
- * Usage from the stdin `rate_limits`, or null when it has no usable window,
- * in which case the caller falls back to the OAuth usage API. Stdin has no
- * per-model weekly windows, so those stay null.
- */
-export function usageFromRateLimits(
-  rateLimits: RateLimits | null | undefined
-): OAuthUsageResponse | null {
-  const toUsage = (w: RateLimitWindow | null | undefined) =>
-    typeof w?.used_percentage === "number" && typeof w.resets_at === "number"
-      ? {
-          percentUsed: w.used_percentage,
-          resetAt: new Date(w.resets_at * 1000),
-          isOverLimit: w.used_percentage >= 100,
-        }
-      : null;
-
-  const fiveHour = toUsage(rateLimits?.five_hour);
-  const sevenDay = toUsage(rateLimits?.seven_day);
-  if (!fiveHour && !sevenDay) return null;
-  return { fiveHour, sevenDay, sevenDayOpus: null, sevenDaySonnet: null };
 }
 
 /**
