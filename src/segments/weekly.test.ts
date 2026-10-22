@@ -1,40 +1,37 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { WeeklyProvider } from "./weekly.js";
+import type { OAuthUsageResponse } from "../utils/oauth.js";
 
-// Mock the oauth module
-vi.mock("../utils/oauth.js", () => ({
-  getRealtimeUsage: vi.fn(),
-}));
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-import { getRealtimeUsage } from "../utils/oauth.js";
+const window = (percentUsed: number, resetAt: Date) => ({
+  percentUsed,
+  resetAt,
+  isOverLimit: false,
+});
+
+const weeklyUsage = (
+  sevenDay: OAuthUsageResponse["sevenDay"],
+  models: Partial<Pick<OAuthUsageResponse, "sevenDayOpus" | "sevenDaySonnet">> = {}
+): OAuthUsageResponse => ({
+  fiveHour: null,
+  sevenDay,
+  sevenDayOpus: models.sevenDayOpus ?? null,
+  sevenDaySonnet: models.sevenDaySonnet ?? null,
+});
 
 describe("WeeklyProvider", () => {
   let provider: WeeklyProvider;
 
   beforeEach(() => {
-    vi.resetAllMocks();
     provider = new WeeklyProvider();
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   describe("getWeeklyInfo", () => {
-    it("returns realtime weekly info when API returns data", async () => {
-      const futureDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days from now
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: null,
-        sevenDay: {
-          percentUsed: 65,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-        sevenDayOpus: null,
-        sevenDaySonnet: null,
-      });
+    it("returns realtime weekly info when usage has a seven-day window", () => {
+      const futureDate = new Date(Date.now() + 5 * DAY_MS); // 5 days from now
 
-      const result = await provider.getWeeklyInfo();
+      const result = provider.getWeeklyInfo(weeklyUsage(window(65, futureDate)));
 
       expect(result.percentUsed).toBe(65);
       expect(result.isRealtime).toBe(true);
@@ -45,19 +42,13 @@ describe("WeeklyProvider", () => {
       expect(result.sonnetPercentUsed).toBeNull();
     });
 
-    it("returns null values and calculated week progress when API returns no sevenDay data", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: {
-          percentUsed: 25,
-          resetAt: new Date(),
-          isOverLimit: false,
-        },
+    it("returns null values and calculated week progress when usage has no sevenDay data", () => {
+      const result = provider.getWeeklyInfo({
+        fiveHour: window(25, new Date()),
         sevenDay: null,
         sevenDayOpus: null,
         sevenDaySonnet: null,
       });
-
-      const result = await provider.getWeeklyInfo();
 
       expect(result.percentUsed).toBeNull();
       expect(result.resetAt).toBeNull();
@@ -66,24 +57,12 @@ describe("WeeklyProvider", () => {
       expect(result.weekProgressPercent).toBeLessThanOrEqual(100);
     });
 
-    it("returns model-specific usage when Opus data is available", async () => {
-      const futureDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: null,
-        sevenDay: {
-          percentUsed: 47,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-        sevenDayOpus: {
-          percentUsed: 15,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-        sevenDaySonnet: null,
-      });
+    it("returns model-specific usage when Opus data is available", () => {
+      const futureDate = new Date(Date.now() + 5 * DAY_MS);
 
-      const result = await provider.getWeeklyInfo();
+      const result = provider.getWeeklyInfo(
+        weeklyUsage(window(47, futureDate), { sevenDayOpus: window(15, futureDate) })
+      );
 
       expect(result.percentUsed).toBe(47);
       expect(result.opusPercentUsed).toBe(15);
@@ -92,24 +71,12 @@ describe("WeeklyProvider", () => {
       expect(result.sonnetResetAt).toBeNull();
     });
 
-    it("returns model-specific usage when Sonnet data is available", async () => {
-      const futureDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: null,
-        sevenDay: {
-          percentUsed: 47,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-        sevenDayOpus: null,
-        sevenDaySonnet: {
-          percentUsed: 7,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-      });
+    it("returns model-specific usage when Sonnet data is available", () => {
+      const futureDate = new Date(Date.now() + 5 * DAY_MS);
 
-      const result = await provider.getWeeklyInfo();
+      const result = provider.getWeeklyInfo(
+        weeklyUsage(window(47, futureDate), { sevenDaySonnet: window(7, futureDate) })
+      );
 
       expect(result.percentUsed).toBe(47);
       expect(result.opusPercentUsed).toBeNull();
@@ -118,112 +85,67 @@ describe("WeeklyProvider", () => {
       expect(result.sonnetResetAt).toEqual(futureDate);
     });
 
-    it("returns all model-specific usage when both are available", async () => {
-      const futureDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: null,
-        sevenDay: {
-          percentUsed: 47,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-        sevenDayOpus: {
-          percentUsed: 15,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-        sevenDaySonnet: {
-          percentUsed: 7,
-          resetAt: futureDate,
-          isOverLimit: false,
-        },
-      });
+    it("returns all model-specific usage when both are available", () => {
+      const futureDate = new Date(Date.now() + 5 * DAY_MS);
 
-      const result = await provider.getWeeklyInfo();
+      const result = provider.getWeeklyInfo(
+        weeklyUsage(window(47, futureDate), {
+          sevenDayOpus: window(15, futureDate),
+          sevenDaySonnet: window(7, futureDate),
+        })
+      );
 
       expect(result.percentUsed).toBe(47);
       expect(result.opusPercentUsed).toBe(15);
       expect(result.sonnetPercentUsed).toBe(7);
     });
 
-    it("returns null values when API returns null", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
-
-      const result = await provider.getWeeklyInfo();
+    it("returns null values when there is no usage", () => {
+      const result = provider.getWeeklyInfo(null);
 
       expect(result.percentUsed).toBeNull();
       expect(result.isRealtime).toBe(false);
     });
 
-    it("uses custom poll interval", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
-
-      await provider.getWeeklyInfo(undefined, undefined, undefined, 30);
-
-      expect(getRealtimeUsage).toHaveBeenCalledWith(30);
-    });
-
-    it("uses default poll interval of 15 when not specified", async () => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
-
-      await provider.getWeeklyInfo();
-
-      expect(getRealtimeUsage).toHaveBeenCalledWith(15);
-    });
-
-    it("handles API errors gracefully", async () => {
-      vi.mocked(getRealtimeUsage).mockRejectedValue(new Error("Network error"));
-
-      const result = await provider.getWeeklyInfo();
-
-      expect(result.percentUsed).toBeNull();
-      expect(result.isRealtime).toBe(false);
-    });
-
-    it("calculates week progress from API reset time", async () => {
+    it("calculates week progress from the window's reset time", () => {
       // Reset time 2 days from now means we're 5 days into the week (71%)
-      const twoDaysFromNow = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
-      vi.mocked(getRealtimeUsage).mockResolvedValue({
-        fiveHour: null,
-        sevenDay: {
-          percentUsed: 50,
-          resetAt: twoDaysFromNow,
-          isOverLimit: false,
-        },
-        sevenDayOpus: null,
-        sevenDaySonnet: null,
-      });
+      const twoDaysFromNow = new Date(Date.now() + 2 * DAY_MS);
 
-      const result = await provider.getWeeklyInfo();
+      const result = provider.getWeeklyInfo(weeklyUsage(window(50, twoDaysFromNow)));
 
       // Should be around 71% (5/7 days)
       expect(result.weekProgressPercent).toBeGreaterThan(60);
       expect(result.weekProgressPercent).toBeLessThan(80);
     });
+
+    it("measures week progress from the latest reset when the reset passed over a week ago", () => {
+      // 10 days past the reset is 3 days into the following week (43%)
+      const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+
+      const result = provider.getWeeklyInfo(weeklyUsage(window(0, tenDaysAgo)));
+
+      expect(result.weekProgressPercent).toBe(43);
+    });
   });
 
   describe("week progress calculation (fallback mode)", () => {
-    beforeEach(() => {
-      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
-    });
-
-    it("calculates progress with default Monday reset", async () => {
-      const result = await provider.getWeeklyInfo();
+    it("calculates progress with default Monday reset", () => {
+      const result = provider.getWeeklyInfo(null);
 
       expect(result.weekProgressPercent).toBeGreaterThanOrEqual(0);
       expect(result.weekProgressPercent).toBeLessThanOrEqual(100);
     });
 
-    it("accepts custom reset day", async () => {
+    it("accepts custom reset day", () => {
       // Reset on Sunday (0)
-      const result = await provider.getWeeklyInfo(0);
+      const result = provider.getWeeklyInfo(null, 0);
 
       expect(result.weekProgressPercent).toBeGreaterThanOrEqual(0);
       expect(result.weekProgressPercent).toBeLessThanOrEqual(100);
     });
 
-    it("accepts custom reset hour and minute", async () => {
-      const result = await provider.getWeeklyInfo(1, 12, 30); // Monday at 12:30
+    it("accepts custom reset hour and minute", () => {
+      const result = provider.getWeeklyInfo(null, 1, 12, 30); // Monday at 12:30
 
       expect(result.weekProgressPercent).toBeGreaterThanOrEqual(0);
       expect(result.weekProgressPercent).toBeLessThanOrEqual(100);

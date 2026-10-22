@@ -89,6 +89,38 @@ describe("oauth utilities", () => {
       expect(result.usage?.sevenDay?.isOverLimit).toBe(true);
     });
 
+    it("clamps utilization to 0-100", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            five_hour: { utilization: -3 },
+            seven_day: { utilization: 150 },
+          }),
+      });
+
+      const result = await fetchUsageFromAPI("test-token");
+
+      expect(result.usage?.fiveHour?.percentUsed).toBe(0);
+      expect(result.usage?.sevenDay?.percentUsed).toBe(100);
+    });
+
+    it("drops a window whose resets_at doesn't parse", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            five_hour: { utilization: 40, resets_at: "not a date" },
+            seven_day: { utilization: 20, resets_at: "2026-10-25T00:00:00Z" },
+          }),
+      });
+
+      const result = await fetchUsageFromAPI("test-token");
+
+      expect(result.usage?.fiveHour).toBeNull();
+      expect(result.usage?.sevenDay?.percentUsed).toBe(20);
+    });
+
     it("returns null when API returns error status", async () => {
       mockFetch.mockResolvedValue({
         ok: false,

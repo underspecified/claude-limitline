@@ -1,6 +1,19 @@
 import { debug } from "./logger.js";
 
 /**
+ * One subscription usage window from the statusline stdin `rate_limits`.
+ */
+export interface RateLimitWindow {
+  used_percentage?: number; // 0-100
+  resets_at?: number; // epoch seconds
+}
+
+export interface RateLimits {
+  five_hour?: RateLimitWindow | null;
+  seven_day?: RateLimitWindow | null;
+}
+
+/**
  * Hook data passed by Claude Code via stdin
  */
 export interface ClaudeHookData {
@@ -24,6 +37,9 @@ export interface ClaudeHookData {
     };
     context_window_size: number;
   };
+  // Claude.ai subscription usage; absent before the session's first API
+  // response, null in an API-key session.
+  rate_limits?: RateLimits | null;
   version?: string;
 }
 

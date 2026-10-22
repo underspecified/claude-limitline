@@ -9,7 +9,7 @@ import { WeeklyProvider } from "./segments/weekly.js";
 import { Renderer } from "./renderer.js";
 import { getEnvironmentInfo } from "./utils/environment.js";
 import { readHookData } from "./utils/claude-hook.js";
-import { getUsageTrend, isLimitlineAuthFailing } from "./utils/oauth.js";
+import { resolveUsage } from "./utils/usage.js";
 import { debug } from "./utils/logger.js";
 
 // Untracked, per-box theme override. Lets the statusline follow OS dark/light
@@ -45,35 +45,32 @@ async function main(): Promise<void> {
     const envInfo = getEnvironmentInfo(hookData, config.context?.maxTokens);
     debug("Environment info:", JSON.stringify(envInfo));
 
-    // Initialize providers
-    const blockProvider = new BlockProvider();
-    const weeklyProvider = new WeeklyProvider();
+    // Usage per window: this session's own stdin `rate_limits` when usable,
+    // else the OAuth path (see resolveUsage).
+    const { usage, trendInfo, authFailing } = await resolveUsage(hookData?.rate_limits, {
+      pollInterval: config.budget?.pollInterval ?? 15,
+      showTrend: config.showTrend ?? false,
+      fiveHour: config.block?.enabled ?? false,
+      sevenDay: config.weekly?.enabled ?? false,
+    });
 
-    // Get data
-    const pollInterval = config.budget?.pollInterval ?? 15;
-
-    const [blockInfo, weeklyInfo] = await Promise.all([
-      config.block?.enabled ? blockProvider.getBlockInfo(pollInterval) : null,
-      config.weekly?.enabled
-        ? weeklyProvider.getWeeklyInfo(
-            config.budget?.resetDay,
-            config.budget?.resetHour,
-            config.budget?.resetMinute,
-            pollInterval
-          )
-        : null,
-    ]);
+    const blockInfo = config.block?.enabled ? new BlockProvider().getBlockInfo(usage) : null;
+    const weeklyInfo = config.weekly?.enabled
+      ? new WeeklyProvider().getWeeklyInfo(
+          usage,
+          config.budget?.resetDay,
+          config.budget?.resetHour,
+          config.budget?.resetMinute
+        )
+      : null;
 
     debug("Block info:", JSON.stringify(blockInfo));
     debug("Weekly info:", JSON.stringify(weeklyInfo));
-
-    // Get trend info for usage changes
-    const trendInfo = config.showTrend ? getUsageTrend() : null;
     debug("Trend info:", JSON.stringify(trendInfo));
 
     // Render output
     const renderer = new Renderer(config);
-    const output = renderer.render(blockInfo, weeklyInfo, envInfo, trendInfo, isLimitlineAuthFailing());
+    const output = renderer.render(blockInfo, weeklyInfo, envInfo, trendInfo, authFailing);
 
     if (output) {
       process.stdout.write(output);

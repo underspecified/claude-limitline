@@ -16,10 +16,19 @@ function activeProfile(): string | null {
   return p ? p : null;
 }
 
-interface UsageData {
+export interface UsageData {
   resetAt: Date;
   percentUsed: number;
   isOverLimit: boolean;
+}
+
+// The one place a usage window is built, from the API and from stdin alike:
+// the percentage is clamped to 0-100, and a non-finite value or an invalid
+// date makes the window unusable (null).
+export function toUsageData(percent: number, resetAt: Date): UsageData | null {
+  if (!Number.isFinite(percent) || !Number.isFinite(resetAt.getTime())) return null;
+  const percentUsed = Math.min(100, Math.max(0, percent));
+  return { resetAt, percentUsed, isOverLimit: percentUsed >= 100 };
 }
 
 export interface OAuthUsageResponse {
@@ -321,11 +330,10 @@ export async function fetchUsageFromAPI(
 
     const parseUsageBlock = (block?: ApiUsageBlock): UsageData | null => {
       if (!block) return null;
-      return {
-        resetAt: block.resets_at ? new Date(block.resets_at) : new Date(),
-        percentUsed: block.utilization ?? 0,
-        isOverLimit: (block.utilization ?? 0) >= 100,
-      };
+      return toUsageData(
+        block.utilization ?? 0,
+        block.resets_at ? new Date(block.resets_at) : new Date()
+      );
     };
 
     return {
