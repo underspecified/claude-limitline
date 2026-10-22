@@ -200,6 +200,33 @@ describe("WeeklyProvider", () => {
       expect(result.weekProgressPercent).toBeGreaterThan(60);
       expect(result.weekProgressPercent).toBeLessThan(80);
     });
+
+    it("renders from stdin usage without calling the usage API", async () => {
+      const twoDaysFromNow = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+
+      const result = await provider.getWeeklyInfo(undefined, undefined, undefined, 15, {
+        fiveHour: null,
+        sevenDay: { percentUsed: 30, resetAt: twoDaysFromNow, isOverLimit: false },
+        sevenDayOpus: null,
+        sevenDaySonnet: null,
+      });
+
+      expect(result.percentUsed).toBe(30);
+      expect(result.resetAt).toEqual(twoDaysFromNow);
+      expect(result.isRealtime).toBe(true);
+      expect(result.weekProgressPercent).toBeGreaterThan(60);
+      expect(result.opusPercentUsed).toBeNull();
+      expect(result.sonnetPercentUsed).toBeNull();
+      expect(getRealtimeUsage).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the usage API when stdin has no usage", async () => {
+      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
+
+      await provider.getWeeklyInfo(undefined, undefined, undefined, 15, null);
+
+      expect(getRealtimeUsage).toHaveBeenCalledWith(15);
+    });
   });
 
   describe("week progress calculation (fallback mode)", () => {

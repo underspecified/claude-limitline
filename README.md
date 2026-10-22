@@ -171,6 +171,12 @@ claude-limitline retrieves data from two sources:
 1. **Hook Data (stdin)** - Claude Code passes JSON with model info, workspace, and session data
 2. **Usage API** - Fetches usage limits from Anthropic's OAuth usage endpoint
 
+### Where the budget numbers come from
+
+The block and weekly segments read Claude Code's own `rate_limits` from the statusline stdin when it is present (`five_hour` and `seven_day`, each with `used_percentage` and `resets_at`). That path makes no network call and needs no credential, and it always matches the account the session runs on. It writes no usage cache, so trend arrows and the Sonnet figure in the `smart` weekly view stay empty on it.
+
+Claude Code sends `rate_limits` only in Claude.ai subscription sessions, from the session's first API response on. Before then, and in API-key sessions (`rate_limits: null`), limitline falls back to the OAuth usage API below. `auth!` can only appear on that fallback path.
+
 ### OAuth Token Location
 
 The tool automatically retrieves your OAuth token from Claude Code's credential storage:

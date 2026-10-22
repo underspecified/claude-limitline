@@ -1,5 +1,5 @@
 import { debug } from "../utils/logger.js";
-import { getRealtimeUsage } from "../utils/oauth.js";
+import { getRealtimeUsage, type OAuthUsageResponse } from "../utils/oauth.js";
 
 export interface WeeklyInfo {
   percentUsed: number | null;
@@ -84,14 +84,16 @@ export class WeeklyProvider {
     return Math.round(progress);
   }
 
+  // `stdinUsage` (from the statusline's `rate_limits`) wins over the OAuth API.
   async getWeeklyInfo(
     resetDay?: number,
     resetHour?: number,
     resetMinute?: number,
-    pollInterval?: number
+    pollInterval?: number,
+    stdinUsage?: OAuthUsageResponse | null
   ): Promise<WeeklyInfo> {
     // Try to get data from OAuth API (realtime mode)
-    const realtimeInfo = await this.getRealtimeWeeklyInfo(pollInterval);
+    const realtimeInfo = await this.getRealtimeWeeklyInfo(pollInterval, stdinUsage);
     if (realtimeInfo) {
       return realtimeInfo;
     }
@@ -113,10 +115,11 @@ export class WeeklyProvider {
   }
 
   private async getRealtimeWeeklyInfo(
-    pollInterval?: number
+    pollInterval?: number,
+    stdinUsage?: OAuthUsageResponse | null
   ): Promise<WeeklyInfo | null> {
     try {
-      const usage = await getRealtimeUsage(pollInterval ?? 15);
+      const usage = stdinUsage ?? (await getRealtimeUsage(pollInterval ?? 15));
       if (!usage || !usage.sevenDay) {
         debug("No realtime weekly usage data available");
         return null;

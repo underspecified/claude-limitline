@@ -135,5 +135,29 @@ describe("BlockProvider", () => {
       expect(result.percentUsed).toBeNull();
       expect(result.isRealtime).toBe(false);
     });
+
+    it("renders from stdin usage without calling the usage API", async () => {
+      const resetAt = new Date(Date.now() + 60 * 60 * 1000);
+
+      const result = await provider.getBlockInfo(15, {
+        fiveHour: { percentUsed: 42, resetAt, isOverLimit: false },
+        sevenDay: null,
+        sevenDayOpus: null,
+        sevenDaySonnet: null,
+      });
+
+      expect(result.percentUsed).toBe(42);
+      expect(result.resetAt).toEqual(resetAt);
+      expect(result.isRealtime).toBe(true);
+      expect(getRealtimeUsage).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the usage API when stdin has no usage", async () => {
+      vi.mocked(getRealtimeUsage).mockResolvedValue(null);
+
+      await provider.getBlockInfo(15, null);
+
+      expect(getRealtimeUsage).toHaveBeenCalledWith(15);
+    });
   });
 });

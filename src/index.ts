@@ -8,7 +8,7 @@ import { BlockProvider } from "./segments/block.js";
 import { WeeklyProvider } from "./segments/weekly.js";
 import { Renderer } from "./renderer.js";
 import { getEnvironmentInfo } from "./utils/environment.js";
-import { readHookData } from "./utils/claude-hook.js";
+import { readHookData, usageFromRateLimits } from "./utils/claude-hook.js";
 import { getUsageTrend, isLimitlineAuthFailing } from "./utils/oauth.js";
 import { debug } from "./utils/logger.js";
 
@@ -52,14 +52,20 @@ async function main(): Promise<void> {
     // Get data
     const pollInterval = config.budget?.pollInterval ?? 15;
 
+    // Claude Code's own `rate_limits` for this session's account. When present,
+    // it replaces the OAuth path entirely: no network, no shared usage cache.
+    const stdinUsage = usageFromRateLimits(hookData?.rate_limits);
+    debug("Usage source:", stdinUsage ? "stdin rate_limits" : "OAuth API");
+
     const [blockInfo, weeklyInfo] = await Promise.all([
-      config.block?.enabled ? blockProvider.getBlockInfo(pollInterval) : null,
+      config.block?.enabled ? blockProvider.getBlockInfo(pollInterval, stdinUsage) : null,
       config.weekly?.enabled
         ? weeklyProvider.getWeeklyInfo(
             config.budget?.resetDay,
             config.budget?.resetHour,
             config.budget?.resetMinute,
-            pollInterval
+            pollInterval,
+            stdinUsage
           )
         : null,
     ]);
@@ -67,13 +73,15 @@ async function main(): Promise<void> {
     debug("Block info:", JSON.stringify(blockInfo));
     debug("Weekly info:", JSON.stringify(weeklyInfo));
 
-    // Get trend info for usage changes
-    const trendInfo = config.showTrend ? getUsageTrend() : null;
+    // Get trend info for usage changes. Trend and auth! both describe the
+    // OAuth path's shared cache and credential, so the stdin path skips them.
+    const trendInfo = config.showTrend && !stdinUsage ? getUsageTrend() : null;
     debug("Trend info:", JSON.stringify(trendInfo));
 
     // Render output
     const renderer = new Renderer(config);
-    const output = renderer.render(blockInfo, weeklyInfo, envInfo, trendInfo, isLimitlineAuthFailing());
+    const authFailing = !stdinUsage && isLimitlineAuthFailing();
+    const output = renderer.render(blockInfo, weeklyInfo, envInfo, trendInfo, authFailing);
 
     if (output) {
       process.stdout.write(output);

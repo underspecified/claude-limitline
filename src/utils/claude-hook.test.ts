@@ -1,5 +1,56 @@
 import { describe, it, expect } from "vitest";
-import { formatModelName } from "./claude-hook.js";
+import { formatModelName, usageFromRateLimits } from "./claude-hook.js";
+
+describe("usageFromRateLimits", () => {
+  it("converts both windows, reading resets_at as epoch seconds", () => {
+    const usage = usageFromRateLimits({
+      five_hour: { used_percentage: 42, resets_at: 1_800_000_000 },
+      seven_day: { used_percentage: 100, resets_at: 1_800_300_000 },
+    });
+
+    expect(usage?.fiveHour).toEqual({
+      percentUsed: 42,
+      resetAt: new Date(1_800_000_000_000),
+      isOverLimit: false,
+    });
+    expect(usage?.sevenDay).toEqual({
+      percentUsed: 100,
+      resetAt: new Date(1_800_300_000_000),
+      isOverLimit: true,
+    });
+  });
+
+  it("leaves the per-model weekly windows null (stdin has none)", () => {
+    const usage = usageFromRateLimits({
+      five_hour: { used_percentage: 1, resets_at: 1_800_000_000 },
+      seven_day: { used_percentage: 2, resets_at: 1_800_300_000 },
+    });
+
+    expect(usage?.sevenDayOpus).toBeNull();
+    expect(usage?.sevenDaySonnet).toBeNull();
+  });
+
+  it("keeps a window null when stdin omits it", () => {
+    const usage = usageFromRateLimits({
+      five_hour: { used_percentage: 5, resets_at: 1_800_000_000 },
+    });
+
+    expect(usage?.fiveHour?.percentUsed).toBe(5);
+    expect(usage?.sevenDay).toBeNull();
+  });
+
+  it("returns null without rate_limits, so the OAuth fallback runs", () => {
+    expect(usageFromRateLimits(undefined)).toBeNull();
+  });
+
+  it("returns null for rate_limits: null (an API-key session)", () => {
+    expect(usageFromRateLimits(null)).toBeNull();
+  });
+
+  it("returns null when rate_limits has neither window", () => {
+    expect(usageFromRateLimits({})).toBeNull();
+  });
+});
 
 describe("formatModelName", () => {
   describe("exact model ID mappings", () => {
